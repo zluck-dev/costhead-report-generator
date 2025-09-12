@@ -16,6 +16,7 @@ GIN_SYNS = {
     "IssueQty":     ["issued quantity","issue qty","qty","quantity","issue quantity","issued qty"],
     "ItemGroup":    ["item group","itemgroup","group","material group","category"],
     "ItemDesc":     ["item desc","item description","description","material","material name","item name","item"],
+    "Remarks":      ["remarks","note","notes","narration","comment"],
 }
 
 MAP_COMPOSITE_SYNS = {
@@ -23,6 +24,48 @@ MAP_COMPOSITE_SYNS = {
     "Value":      ["parent wbs / activity name / sub project","parent wbs/activity name/sub project","value","criteria","keyword"],
     "FromWhere":  ["from where","match in","field","where"],
 }
+
+# ---------- Special keyword classification (report_simple_v7 logic) ----------
+EXCLUDE_ANY_DESC = [
+    "CPVC PIPE", "UPVC PIPE",
+    "ASHIRVAD CPVC", "ASHIRVAD UPVC", "BIRLA UPVC",
+    "NEGEV SAND MATT", "GVT TILE", "THREAD SAND TEXTURE", "8'X4' TILES"
+]
+EXCLUDE_ANY_GROUP = ["CPVC", "UPVC"]
+
+STEEL_KEYWORDS_DESC = [
+    "TMT","REBAR","REINFORCEMENT","MS ROD","TOR STEEL","BINDING WIRE","STEEL BAR",
+    "TMT BAR","DOWEL","CHAIR","REO","DEFORMED BAR","RIBBED BAR"
+]
+STEEL_KEYWORDS_GROUP = ["STEEL"]
+STEEL_EXCLUDE_DESC = ["PPC","OPC","CEMENT","C CHANNEL","CHANNEL","MS C CHANNEL","M.S. C - CHANNEL"]
+STEEL_EXCLUDE_GROUP = ["CEMENT","PPC","OPC","CHANNEL"]
+
+CONCRETE_KEYWORDS_DESC = [
+    "RMC","READY MIX","READY-MIX","READYMIX","TRANSIT MIX","PUMPED CONCRETE",
+    "M20","M25","M30","M35","M40","DESIGN MIX","SITE MIX CONCRETE",
+    "FLY ASH CONCRETE","GGBS CONCRETE","WITH FLY ASH","WITHOUT FLY ASH","GGBS","GGBFS",
+    "OPC CEMENT","OPC","ORDINARY PORTLAND CEMENT",
+    "FLY ASH",
+    "SLAG 80-100MM","SLAG 40-80MM","SLAG",
+    "6MM MAMRI","MAMRI 6MM",
+    "GSB",
+    "20MM KAPCHI","KAPCHI 20MM"
+]
+CONCRETE_KEYWORDS_GROUP = ["CONCRETE","CEMENT CONCRETE","RMC","READY MIX","OPC"]
+
+MASONRY_KEYWORDS_DESC = [
+    "RIVER SAND","POICHA","M SAND","MSAND","SAND",
+    "PPC CEMENT","CEMENT PPC","PPC (BAG)","PPC BAG",
+    "AAC BLOCK","AUTOCLAVED AERATED",
+    "SBR","SIKA LATEX",
+    "FIBER CHICKEN MESH","CHICKEN MESH","FIBER MESH",
+    "BLOCK JOINT MORTAR","BLOCK JOINTING MORTAR","TBM BLOCK JOINTING MORTAR","BLOCK FIX","JOINING MORTAR",
+    "FLYASH BRICK","FLY ASH BRICK","RED BRICK","REGULAR RED BRICKS","BRICK",
+    "SIKA GROUT 214 1N","SIKA GROUT 214","GROUT 214","GROUT",
+    "NON ISI PVC PIPE","PVC PIPE"
+]
+MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC"]
 
 # ---------- Helpers ----------
 def _clean_name(s: str) -> str:
@@ -85,6 +128,75 @@ def _field_for(where_text: str) -> str:
     if "project" in w:                  return "Project"
     return "ActivityName"
 
+# ---------- SubProject Filter ----------
+def _norm_sub(s: str) -> str:
+    if s is None: return ""
+    s = str(s).upper().replace('-', ' ')
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+def _is_allowed_subproject(sp: str) -> bool:
+    spn = _norm_sub(sp)
+    if spn == "PODIUM":
+        return True
+    if spn.startswith("TOWER ") and len(spn) == len("TOWER X"):
+        letter = spn.split(" ")[-1]
+        return len(letter) == 1 and 'A' <= letter <= 'Z'
+    return False
+
+# ---------- Special Heads Classifier ----------
+def _is_globally_excluded(item_group: str, item_desc: str, remarks: str) -> bool:
+    G, D, R = (str(item_group or "").upper(), str(item_desc or "").upper(), str(remarks or "").upper())
+    for kw in EXCLUDE_ANY_DESC:
+        if kw in D or kw in R:
+            return True
+    for kw in EXCLUDE_ANY_GROUP:
+        if kw in G:
+            return True
+    return False
+
+def _classify_special_head(row: Dict) -> str:
+    g = str(row.get("ItemGroup","") or "").upper()
+    d = str(row.get("ItemDesc","") or "").upper()
+    r = str(row.get("Remarks","") or "").upper()
+    hay_desc = f"{d} {r}".strip()
+    hay_group = g
+    # Only extract Steel/Concrete/Masonry for allowed SubProjects (PODIUM or TOWER A-Z)
+    sp_allowed = _is_allowed_subproject(row.get("SubProject", ""))
+
+    if _is_globally_excluded(g, d, r):
+        return "Other"
+
+    steel_hit = any(kw in hay_desc for kw in STEEL_KEYWORDS_DESC) or any(kw in hay_group for kw in STEEL_KEYWORDS_GROUP)
+    if steel_hit:
+        if sp_allowed and not (any(x in hay_desc for x in STEEL_EXCLUDE_DESC) or any(x in hay_group for x in STEEL_EXCLUDE_GROUP)):
+            return "Steel"
+
+    if sp_allowed and (any(kw in hay_desc for kw in MASONRY_KEYWORDS_DESC) or any(kw in hay_group for kw in MASONRY_KEYWORDS_GROUP)):
+        return "Masonry and plaster material only"
+
+    if sp_allowed:
+        for kw in CONCRETE_KEYWORDS_DESC:
+            if kw in hay_desc:
+                return "Concrete"
+        for kw in CONCRETE_KEYWORDS_GROUP:
+            if kw in hay_group:
+                return "Concrete"
+
+    return "Other"
+
+# ---------- Canonicalize CostHead labels ----------
+def _canonicalize_costhead(value: str) -> str:
+    s = (value or "").strip()
+    key = re.sub(r"[^a-z]+", " ", s.lower()).strip()
+    if key == "steel":
+        return "Steel"
+    if key == "concrete":
+        return "Concrete"
+    if key in {"masonry and plaster material only", "masonry plaster material only", "masonry and plaster"}:
+        return "Masonry and plaster material only"
+    return s
+
 # ---------- Loaders ----------
 def load_gin(df_raw: pd.DataFrame) -> pd.DataFrame:
     gin = _detect_header(df_raw, key_words=("activity","wbs","sub","project","amount","issue","qty","item"))
@@ -94,7 +206,7 @@ def load_gin(df_raw: pd.DataFrame) -> pd.DataFrame:
     if not cols.get("Project"):
         gin["__ProjectBlank__"] = ""
         cols["Project"] = "__ProjectBlank__"
-    if miss: 
+    if miss:
         raise ValueError(f"GIN_Mapped missing columns: {miss}\nFound: {list(gin.columns)}")
 
     out = pd.DataFrame({
@@ -107,6 +219,7 @@ def load_gin(df_raw: pd.DataFrame) -> pd.DataFrame:
     out["ItemGroup"] = _norm_series_text(gin[cols["ItemGroup"]]) if cols.get("ItemGroup") else ""
     out["ItemDesc"]  = _norm_series_text(gin[cols["ItemDesc"]])  if cols.get("ItemDesc")  else ""
     out["IssueQty"]  = _norm_series_amt(gin[cols["IssueQty"]])   if cols.get("IssueQty")  else 0.0
+    out["Remarks"]   = _norm_series_text(gin[cols["Remarks"]])   if cols.get("Remarks")   else ""
 
     return out
 
@@ -128,11 +241,25 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     tagged["CostHead"] = "Other"
     assigned_mask = pd.Series(False, index=tagged.index)
 
+    # Pre-assign special heads (Steel/Concrete/Masonry) via keywords, ignoring mapping file for these
+    specials = tagged.apply(_classify_special_head, axis=1)
+    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only"])
+    tagged.loc[special_mask, "CostHead"] = specials[special_mask]
+    assigned_mask = assigned_mask | special_mask
+
+    # Expand mapping rules (for remaining non-special rows only)
     expanded = []
+    special_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
     for _, r in mapping.iterrows():
-        head = r["CostHead"]; field = _field_for(r["FromWhere"])
+        head_raw = r["CostHead"]
+        head_can = _canonicalize_costhead(head_raw)
+        # Skip any mapping rule that tries to set a special head; those are keyword-only
+        if head_can in special_heads:
+            continue
+        field = _field_for(r["FromWhere"])
         for kw in _split_keywords(r["Value"]):
-            if head and kw: expanded.append({"CostHead": head, "Field": field, "Keyword": kw})
+            if head_raw and kw:
+                expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw})
     map_expanded = pd.DataFrame(expanded)
 
     if not map_expanded.empty:
@@ -149,43 +276,28 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
 # ---------- Reallocate unmatched by SubProject ----------
 def reallocate_unmatched_by_subproject(tagged: pd.DataFrame) -> pd.DataFrame:
     t = tagged.copy()
-    is_other = (t["CostHead"] == "Other")
-
-    # normalize subproject for comparison
-    sp = t["SubProject"].fillna("").astype(str)
-    sp_norm = sp.str.upper().str.replace(r"\s+", " ", regex=True)
-
-    mask_tower_a = is_other & sp_norm.isin(["TOWER A", "TOWER - A"])
-    mask_tower_b = is_other & sp_norm.isin(["TOWER B", "TOWER - B"])
-
-    t.loc[mask_tower_a, "CostHead"] = "WITHOUT ACTIVITY CODE TOWER A"
-    t.loc[mask_tower_b, "CostHead"] = "WITHOUT ACTIVITY CODE TOWER B"
-
-    # remaining "Other" with a non-empty SubProject -> use SubProject name as CostHead
-    mask_sp_rest = is_other & (sp_norm != "")
-    t.loc[mask_sp_rest, "CostHead"] = sp[mask_sp_rest]  # keep original (human-readable) SubProject as the head
-
+    # Disabled per user request: do not introduce extra CostHeads based on SubProject
     return t
 
 # ---------- Main CostHead Report Function ----------
 def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_dir: str, match_mode: str = "contains") -> Dict[str, str]:
     """
     Generate CostHead reports based on the build_costhead_report_v9.py script
-    
+
     Args:
         gin_filepath: Path to the GIN_Mapped Excel file
         costhead_filepath: Path to the CostHead Excel file
         output_dir: Directory to save the output reports
         match_mode: "contains" or "exact" for matching mode
-    
+
     Returns:
         Dict with paths to generated files
     """
-    
+
     # Load the Excel files
     gin_xl = pd.ExcelFile(gin_filepath, engine="openpyxl")
     costhead_xl = pd.ExcelFile(costhead_filepath, engine="openpyxl")
-    
+
     # Find the GIN_Mapped sheet (should be the main sheet)
     gin_sheet = None
     for sheet in gin_xl.sheet_names:
@@ -194,51 +306,81 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             break
     if not gin_sheet:
         gin_sheet = gin_xl.sheet_names[0]  # Use first sheet if not found
-    
+
     # Load raw data
     gin_raw = gin_xl.parse(gin_sheet, header=None)
     costhead_raw = costhead_xl.parse(costhead_xl.sheet_names[0], header=None)  # Use first sheet
-    
+
     # Process the data
     gin = load_gin(gin_raw)
+
+    # Removed global SubProject filtering; filtering is enforced only for Steel/Concrete/Masonry within classifier
+
     mapping = load_mapping(costhead_raw)
     mapping = mapping[mapping["CostHead"] != ""].copy()
-    
-    # 1) Apply mapping
+
+    # 1) Apply mapping (with special heads pre-assigned)
     tagged, map_expanded = assign_cost_head(gin, mapping, match_mode=match_mode)
-    
+
     # 2) Reallocate any remaining "Other" by SubProject rules
     tagged_final = reallocate_unmatched_by_subproject(tagged)
-    
+
+    # Canonicalize CostHead labels to avoid duplicates like STEEL vs Steel
+    tagged_final["CostHead"] = tagged_final["CostHead"].apply(_canonicalize_costhead)
+
     # 3) Build reports from the final classification
     breakdown = (
         tagged_final.groupby(["CostHead","ActivityName","ParentWBS","SubProject","Project"], as_index=False)["Amount"]
         .sum().rename(columns={"Amount":"TotalAmount"})
         .sort_values(["CostHead","ActivityName","ParentWBS","SubProject","Project"])
     )
-    
+
     matched_final = tagged_final.copy()  # everything, since we've allocated
     summary = (
         matched_final.groupby("CostHead", as_index=False)["Amount"]
         .sum().rename(columns={"Amount":"TotalAmount"})
         .sort_values("CostHead")
     )
-    
-    def make_sources(g: pd.DataFrame) -> str:
-        tuples = (
-            g[["ActivityName","ParentWBS","SubProject","Project"]]
-            .drop_duplicates().astype(str)
-            .agg(" | ".join, axis=1).tolist()
-        )
-        return "; ".join(tuples)[:60000]
-    
-    srcs = (
-        matched_final.groupby("CostHead")[["ActivityName","ParentWBS","SubProject","Project"]]
-        .apply(make_sources)
-        .reset_index(name="Sources")
-    )
-    summary = summary.merge(srcs, on="CostHead", how="left")
-    
+
+    # Build ITEM column: aggregated unique tokens "ItemGroup | ItemDesc" per CostHead
+    def _token(row):
+        ig = str(row.get("ItemGroup", "") or "").strip()
+        idc = str(row.get("ItemDesc", "") or "").strip()
+        if ig and idc:
+            return f"{ig} | {idc}"
+        return idc or ig or "(blank)"
+
+    item_text: Dict[str, str] = {}
+    for head in summary["CostHead"].tolist():
+        subset = matched_final[matched_final["CostHead"] == head]
+        uniq = sorted(set(_token(r) for _, r in subset.iterrows()))
+        MAX_ITEMS = 200
+        if len(uniq) > MAX_ITEMS:
+            shown = uniq[:MAX_ITEMS]
+            more = len(uniq) - MAX_ITEMS
+            item_text[head] = "; ".join(shown) + f"; ... (+{more} more)"
+        else:
+            item_text[head] = "; ".join(uniq)
+    summary["ITEM"] = summary["CostHead"].map(item_text).fillna("")
+
+##TODO: For Source Add This
+    # def make_sources(g: pd.DataFrame) -> str:
+    #     tuples = (
+    #         g[["ActivityName","ParentWBS","SubProject","Project"]]
+    #         .drop_duplicates().astype(str)
+    #         .agg(" | ".join, axis=1).tolist()
+    #     )
+    #     return "; ".join(tuples)[:60000]
+
+    # srcs = (
+    #     matched_final.groupby("CostHead")[
+    #         ["ActivityName","ParentWBS","SubProject","Project"]
+    #     ]
+    #     .apply(make_sources)
+    #     .reset_index(name="Sources")
+    # )
+    # summary = summary.merge(srcs, on="CostHead", how="left")
+
     # For audit, show what *would have been* unmatched before we reallocated
     other_before = tagged[tagged["CostHead"] == "Other"].copy()
     unmatched_detail = (
@@ -251,20 +393,20 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         .sum().rename(columns={"Amount":"TotalAmount"})
         .sort_values(["SubProject","TotalAmount"], ascending=[True, False])
     )
-    
+
     # 4) Create output directory and write reports
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     output_file = output_path / "CostHead_Reports.xlsx"
-    
+
     with pd.ExcelWriter(output_file, engine="openpyxl", mode="w") as xw:
         breakdown.to_excel(xw, sheet_name="CostHead_Breakdown", index=False)
         summary.to_excel(xw, sheet_name="CostHead_Summary", index=False)
         map_expanded.to_excel(xw, sheet_name="Mapping_Expanded", index=False)
         unmatched_detail.to_excel(xw, sheet_name="Unmatched_Detail", index=False)
         unmatched_by_sp.to_excel(xw, sheet_name="Unmatched_By_SubProject", index=False)
-    
+
     return {
         "output_file": str(output_file),
         "output_dir": str(output_path),
