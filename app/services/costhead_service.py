@@ -117,7 +117,7 @@ def _norm_series_amt(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
 def _split_keywords(v: str):
-    parts = re.split(r"[;,]", v or "")
+    parts = re.split(r"[;\,\|]", v or "")
     return [_norm_text(p) for p in parts if p.strip()]
 
 def _field_for(where_text: str) -> str:
@@ -256,10 +256,16 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
         # Skip any mapping rule that tries to set a special head; those are keyword-only
         if head_can in special_heads:
             continue
-        field = _field_for(r["FromWhere"])
+        # Support multi-field FromWhere like "ParentWBS, ActivityName"
+        fields_raw = str(r["FromWhere"] or "")
+        fields = [f.strip() for f in re.split(r"[;,]", fields_raw) if f.strip()]
+        if not fields:
+            fields = [_field_for(r["FromWhere"])]
         for kw in _split_keywords(r["Value"]):
             if head_raw and kw:
-                expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw})
+                for f in fields:
+                    field = _field_for(f)
+                    expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw})
     map_expanded = pd.DataFrame(expanded)
 
     if not map_expanded.empty:
