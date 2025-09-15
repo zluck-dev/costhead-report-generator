@@ -357,7 +357,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         return idc or ig or "(blank)"
 
     item_text: Dict[str, str] = {}
+    allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
     for head in summary["CostHead"].tolist():
+        if head not in allowed_item_heads:
+            continue
         subset = matched_final[matched_final["CostHead"] == head]
         uniq = sorted(set(_token(r) for _, r in subset.iterrows()))
         MAX_ITEMS = 200
