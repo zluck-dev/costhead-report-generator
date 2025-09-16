@@ -3,6 +3,7 @@ import re
 import warnings
 from typing import List, Dict, Tuple
 from pathlib import Path
+from openpyxl.styles import PatternFill, Font, Alignment
 
 warnings.filterwarnings("ignore")
 
@@ -458,7 +459,14 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     amenities_as_costhead = amenities_summary.rename(columns={"Amenity":"CostHead"})[
         ["CostHead","TotalAmount","ITEM"]
     ]
-    summary = pd.concat([summary, amenities_as_costhead], ignore_index=True)
+    amenities_header = pd.DataFrame({
+        "CostHead": ["Amenities"],
+        "TotalAmount": [""],
+        "ITEM": [""]
+    })
+    # Track the position (Excel row) of the amenities header for formatting
+    summary_base_len = len(summary)
+    summary = pd.concat([summary, amenities_header, amenities_as_costhead], ignore_index=True)
 
     # 4) Create output directory and write reports
     output_path = Path(output_dir)
@@ -472,6 +480,22 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         map_expanded.to_excel(xw, sheet_name="Mapping_Expanded", index=False)
         unmatched_detail.to_excel(xw, sheet_name="Unmatched_Detail", index=False)
         unmatched_by_sp.to_excel(xw, sheet_name="Unmatched_By_SubProject", index=False)
+
+        # Apply formatting to the Amenities header row in CostHead_Summary
+        try:
+            ws = xw.sheets["CostHead_Summary"]
+            header_row_idx = summary_base_len + 2  # +1 for header, +1 for 1-based rows
+            n_cols = summary.shape[1]
+            fill = PatternFill(fill_type="solid", start_color="FFEFEFEF", end_color="FFEFEFEF")
+            font = Font(bold=True)
+            align = Alignment(horizontal="left")
+            for c in range(1, n_cols + 1):
+                cell = ws.cell(row=header_row_idx, column=c)
+                cell.fill = fill
+                cell.font = font
+                cell.alignment = align
+        except Exception:
+            pass
 
     return {
         "output_file": str(output_file),
