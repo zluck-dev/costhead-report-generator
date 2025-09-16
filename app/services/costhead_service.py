@@ -454,6 +454,12 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         .sort_values(["SubProject","TotalAmount"], ascending=[True, False])
     )
 
+    # Append amenities summary at end of CostHead_Summary
+    amenities_as_costhead = amenities_summary.rename(columns={"Amenity":"CostHead"})[
+        ["CostHead","TotalAmount","ITEM"]
+    ]
+    summary = pd.concat([summary, amenities_as_costhead], ignore_index=True)
+
     # 4) Create output directory and write reports
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -466,10 +472,9 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         map_expanded.to_excel(xw, sheet_name="Mapping_Expanded", index=False)
         unmatched_detail.to_excel(xw, sheet_name="Unmatched_Detail", index=False)
         unmatched_by_sp.to_excel(xw, sheet_name="Unmatched_By_SubProject", index=False)
-        amenities_summary.to_excel(xw, sheet_name="Amenities_No_ActivityCode", index=False)
 
     return {
         "output_file": str(output_file),
         "output_dir": str(output_path),
-        "sheets": ["CostHead_Breakdown", "CostHead_Summary", "Mapping_Expanded", "Unmatched_Detail", "Unmatched_By_SubProject", "Amenities_No_ActivityCode"]
+        "sheets": ["CostHead_Breakdown", "CostHead_Summary", "Mapping_Expanded", "Unmatched_Detail", "Unmatched_By_SubProject"]
     }
