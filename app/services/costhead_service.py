@@ -360,8 +360,13 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     )
 
     matched_final = tagged_final.copy()  # everything, since we've allocated
+    amenities_mask_summary = (
+        (matched_final["CostHead"] == "Other") &
+        ((matched_final["ActivityName"].fillna("") == "") | (matched_final["ParentWBS"].fillna("") == ""))
+    )
     summary = (
-        matched_final.groupby("CostHead", as_index=False)["Amount"]
+        matched_final[~amenities_mask_summary]
+        .groupby("CostHead", as_index=False)["Amount"]
         .sum().rename(columns={"Amount":"TotalAmount"})
         .sort_values("CostHead")
     )
@@ -389,6 +394,33 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         else:
             item_text[head] = "; ".join(uniq)
     summary["ITEM"] = summary["CostHead"].map(item_text).fillna("")
+
+    # Build Indoor Amenities breakdown into ITEM cell as bullet list of SubProject totals
+    indoor_item_excel_row = None
+    try:
+        indoor_mask_data = matched_final["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
+        if indoor_mask_data.any():
+            sp_totals = (
+                matched_final[indoor_mask_data]
+                .groupby("SubProject", as_index=False)["Amount"].sum()
+                .sort_values("SubProject")
+            )
+            # Clean names and build bullet lines
+            lines = []
+            for _, r in sp_totals.iterrows():
+                sp = str(r["SubProject"]).strip()
+                amt = float(r["Amount"]) if pd.notnull(r["Amount"]) else 0.0
+                if sp:
+                    lines.append(f"- {sp} - {amt:,.2f} Rs.")
+            text = "\n".join(lines)
+            # Write into summary ITEM cell for Indoor Amenities
+            mask_summary = summary["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
+            if mask_summary.any():
+                idx = int(summary[mask_summary].index[0])
+                indoor_item_excel_row = idx + 2  # +1 for header, +1 for 1-based rows
+                summary.loc[mask_summary, "ITEM"] = text
+    except Exception:
+        pass
 
 ##TODO: For Source Add This
     # def make_sources(g: pd.DataFrame) -> str:
@@ -494,6 +526,16 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
                 cell.fill = fill
                 cell.font = font
                 cell.alignment = align
+        except Exception:
+            pass
+
+        # Wrap text for Indoor Amenities ITEM cell so bullet list is readable
+        try:
+            if indoor_item_excel_row is not None:
+                ws = xw.sheets["CostHead_Summary"]
+                item_col_idx = summary.columns.get_loc("ITEM") + 1
+                cell = ws.cell(row=indoor_item_excel_row, column=item_col_idx)
+                cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
         except Exception:
             pass
 
