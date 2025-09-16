@@ -285,6 +285,20 @@ def reallocate_unmatched_by_subproject(tagged: pd.DataFrame) -> pd.DataFrame:
     # Disabled per user request: do not introduce extra CostHeads based on SubProject
     return t
 
+# ---------- Fallbacks based on ParentWBS for unmatched ----------
+def apply_parentwbs_fallbacks(tagged: pd.DataFrame) -> pd.DataFrame:
+    t = tagged.copy()
+    is_other = (t["CostHead"] == "Other")
+    wbs_norm = t["ParentWBS"].fillna("").astype(str).map(_norm_text)
+    mask_masonry = is_other & (
+        wbs_norm.str.contains(r"\bMASONARY WORK\b", regex=True) |
+        wbs_norm.str.contains(r"\bINTERNAL PLASTER WORK\b", regex=True)
+    )
+    mask_concrete = is_other & wbs_norm.str.contains(r"\bRCC WORK\b", regex=True)
+    t.loc[mask_masonry, "CostHead"] = "Masonry and plaster material only"
+    t.loc[mask_concrete, "CostHead"] = "Concrete"
+    return t
+
 # ---------- Main CostHead Report Function ----------
 def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_dir: str, match_mode: str = "contains") -> Dict[str, str]:
     """
@@ -327,6 +341,9 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # 1) Apply mapping (with special heads pre-assigned)
     tagged, map_expanded = assign_cost_head(gin, mapping, match_mode=match_mode)
+
+    # 1b) Apply ParentWBS-based fallbacks so these are not counted as unmatched
+    tagged = apply_parentwbs_fallbacks(tagged)
 
     # 2) Reallocate any remaining "Other" by SubProject rules
     tagged_final = reallocate_unmatched_by_subproject(tagged)
@@ -392,6 +409,40 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # For audit, show what *would have been* unmatched before we reallocated
     other_before = tagged[tagged["CostHead"] == "Other"].copy()
+
+    # Amenities: rows without ActivityName or ParentWBS
+    def _fmt_amenity_name(sp: str) -> str:
+        s = _norm_sub(sp)
+        if s.startswith("TOWER ") and len(s) == len("TOWER X"):
+            return s.replace(" ", " - ") + " ( No Activity Code )"
+        if s == "PODIUM":
+            return "PODIUM ( No Activity Code )"
+        return f"{s} ( No Activity Code )" if s else "( No Activity Code )"
+
+    amenities_mask = (other_before["ActivityName"].fillna("") == "") | (other_before["ParentWBS"].fillna("") == "")
+    amenities_rows = other_before[amenities_mask].copy()
+    amenities_rows["Amenity"] = amenities_rows["SubProject"].apply(_fmt_amenity_name)
+
+    def _token(row):
+        ig = str(row.get("ItemGroup", "") or "").strip()
+        idc = str(row.get("ItemDesc", "") or "").strip()
+        if ig and idc:
+            return f"{ig} | {idc}"
+        return idc or ig or "(blank)"
+
+    amenities_items = (
+        amenities_rows.groupby("Amenity")
+        .apply(lambda g: "; ".join(sorted(set(_token(r) for _, r in g.iterrows()))))
+        .reset_index(name="ITEM")
+    )
+    amenities_summary = (
+        amenities_rows.groupby("Amenity", as_index=False)["Amount"]
+        .sum().rename(columns={"Amount":"TotalAmount"})
+        .merge(amenities_items, on="Amenity", how="left")
+        .sort_values("Amenity")
+    )
+
+    # Include amenities also in unmatched views
     unmatched_detail = (
         other_before[["ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc","IssueQty","Amount"]]
         .copy().rename(columns={"Amount":"IssueAmt"})
@@ -415,9 +466,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         map_expanded.to_excel(xw, sheet_name="Mapping_Expanded", index=False)
         unmatched_detail.to_excel(xw, sheet_name="Unmatched_Detail", index=False)
         unmatched_by_sp.to_excel(xw, sheet_name="Unmatched_By_SubProject", index=False)
+        amenities_summary.to_excel(xw, sheet_name="Amenities_No_ActivityCode", index=False)
 
     return {
         "output_file": str(output_file),
         "output_dir": str(output_path),
-        "sheets": ["CostHead_Breakdown", "CostHead_Summary", "Mapping_Expanded", "Unmatched_Detail", "Unmatched_By_SubProject"]
+        "sheets": ["CostHead_Breakdown", "CostHead_Summary", "Mapping_Expanded", "Unmatched_Detail", "Unmatched_By_SubProject", "Amenities_No_ActivityCode"]
     }
