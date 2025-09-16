@@ -367,7 +367,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     summary = (
         matched_final[~amenities_mask_summary]
         .groupby("CostHead", as_index=False)["Amount"]
-        .sum().rename(columns={"Amount":"TotalAmount"})
+        .sum().rename(columns={"Amount":"Material TotalAmount"})
         .sort_values("CostHead")
     )
 
@@ -393,7 +393,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             item_text[head] = "; ".join(shown) + f"; ... (+{more} more)"
         else:
             item_text[head] = "; ".join(uniq)
-    summary["ITEM"] = summary["CostHead"].map(item_text).fillna("")
+    summary["ITEM Remark"] = summary["CostHead"].map(item_text).fillna("")
 
     # Build Indoor Amenities breakdown into ITEM cell as bullet list of SubProject totals
     indoor_item_excel_row = None
@@ -416,11 +416,81 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             # Write into summary ITEM cell for Indoor Amenities
             mask_summary = summary["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
             if mask_summary.any():
-                idx = int(summary[mask_summary].index[0])
-                indoor_item_excel_row = idx + 2  # +1 for header, +1 for 1-based rows
-                summary.loc[mask_summary, "ITEM"] = text
+                summary.loc[mask_summary, "ITEM Remark"] = text
     except Exception:
         pass
+
+    # Enforce fixed CostHead ordering and merge specified variants
+    desired_order = [
+        "Excavation",
+        "D--wall",
+        "Rcc + masonry + plaster labour",
+        "Steel",
+        "Concrete",
+        "Masonry and plaster material only",
+        "UNIT FINISH (COST REQUIRE TO FINISH ONE. UNIT (FLAT SHOP OFFICE SERVANT ROOM) . EXCLUDING MASONRY & PLASTER",
+        "Window section",
+        "RAILING, GRILL",
+        "STAIR, TYPICAL PASSAGE, BASEMENT PASSAGE, BASEMENT FOYER",
+        "TERRACE FINISHING (WATERPROOFING AND FINISHING)",
+        "Basement finishing only (including floor finishing, color and lighting, art work & excluding fire, basement exhaust)",
+        "Common plumbing (including pumps)",
+        "Common electric (geb, dg, tc to meter room and meter room to flat nCD",
+        "Fire (including basement exhaust)",
+        "LANDSCAPE, OUTDOOR AMENITIES, GROUND FLOOR DRIVEWAY AND PARKING, COMPOUND WALL & GATE",
+        "Indoor amenities",
+        "Louvers",
+        "Outer paint and texture",
+        "Elevation treatment (cladding)",
+        "Lift",
+        "Consultants",
+        "Overhead",
+        "Miscellaneous",
+    ]
+
+    combined_16 = "LANDSCAPE, OUTDOOR AMENITIES, GROUND FLOOR DRIVEWAY AND PARKING, COMPOUND WALL & GATE"
+
+    # Build normalization map for desired labels and include 16's variants
+    def _normalize_head_label(label: str) -> str:
+        return _norm_text(label or "")
+
+    desired_norm_map = { _normalize_head_label(h): h for h in desired_order }
+    variant_norm_map = {
+        _normalize_head_label("LANDSCAPE, OUTDOOR AMENITIES, GROUND FLOOR DRIVEWAY AND PARKING"): combined_16,
+        _normalize_head_label("COMPOUND WALL & GATE"): combined_16,
+    }
+
+    def _merge_and_canonicalize_costhead(label: str) -> str:
+        norm = _normalize_head_label(label)
+        if norm in variant_norm_map:
+            return variant_norm_map[norm]
+        if norm in desired_norm_map:
+            return desired_norm_map[norm]
+        return str(label or "")
+
+    # Apply merging/canonicalization on summary then re-aggregate in case of merges
+    if not summary.empty:
+        summary["CostHead"] = summary["CostHead"].map(_merge_and_canonicalize_costhead)
+        if "Material TotalAmount" in summary.columns:
+            agg = summary.groupby("CostHead", as_index=False).agg({
+                "Material TotalAmount": "sum",
+                "ITEM Remark": lambda s: "; ".join([x for x in s if str(x).strip()])
+            })
+        else:
+            agg = summary.groupby("CostHead", as_index=False).agg({
+                "ITEM Remark": lambda s: "; ".join([x for x in s if str(x).strip()])
+            })
+        summary = agg
+
+    # Pad missing heads and enforce order
+    order_df = pd.DataFrame({"CostHead": desired_order})
+    summary = order_df.merge(summary, on="CostHead", how="left")
+    if "Material TotalAmount" in summary.columns:
+        summary["Material TotalAmount"] = summary["Material TotalAmount"].fillna("")
+    summary["ITEM Remark"] = summary["ITEM Remark"].fillna("")
+
+    # After reordering/padding, compute the Indoor Amenities Excel row index at write-time
+    indoor_item_excel_row = None
 
 ##TODO: For Source Add This
     # def make_sources(g: pd.DataFrame) -> str:
@@ -466,11 +536,11 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     amenities_items = (
         amenities_rows.groupby("Amenity")
         .apply(lambda g: "; ".join(sorted(set(_token(r) for _, r in g.iterrows()))))
-        .reset_index(name="ITEM")
+        .reset_index(name="ITEM Remark")
     )
     amenities_summary = (
         amenities_rows.groupby("Amenity", as_index=False)["Amount"]
-        .sum().rename(columns={"Amount":"TotalAmount"})
+        .sum().rename(columns={"Amount":"Material TotalAmount"})
         .merge(amenities_items, on="Amenity", how="left")
         .sort_values("Amenity")
     )
@@ -489,12 +559,12 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # Append amenities summary at end of CostHead_Summary
     amenities_as_costhead = amenities_summary.rename(columns={"Amenity":"CostHead"})[
-        ["CostHead","TotalAmount","ITEM"]
+        ["CostHead","Material TotalAmount","ITEM Remark"]
     ]
     amenities_header = pd.DataFrame({
-        "CostHead": ["Amenities"],
-        "TotalAmount": [""],
-        "ITEM": [""]
+        "CostHead": ["Extra Remaining -Unmatched"],
+        "Material TotalAmount": [""],
+        "ITEM Remark": [""]
     })
     # Track the position (Excel row) of the amenities header for formatting
     summary_base_len = len(summary)
@@ -531,9 +601,15 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
         # Wrap text for Indoor Amenities ITEM cell so bullet list is readable
         try:
+            ws = xw.sheets["CostHead_Summary"]
+            # Recompute the row of Indoor amenities after ordering/padding
+            try:
+                indoor_idx_zero = summary.index[summary["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"][0]
+                indoor_item_excel_row = int(indoor_idx_zero) + 2
+            except Exception:
+                indoor_item_excel_row = None
             if indoor_item_excel_row is not None:
-                ws = xw.sheets["CostHead_Summary"]
-                item_col_idx = summary.columns.get_loc("ITEM") + 1
+                item_col_idx = summary.columns.get_loc("ITEM Remark") + 1
                 cell = ws.cell(row=indoor_item_excel_row, column=item_col_idx)
                 cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
         except Exception:
