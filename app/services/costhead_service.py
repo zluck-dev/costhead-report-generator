@@ -118,8 +118,26 @@ def _norm_series_amt(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce").fillna(0.0)
 
 def _split_keywords(v: str):
-    parts = re.split(r"[;\,\|]", v or "")
-    return [_norm_text(p) for p in parts if p.strip()]
+    # Improve keyword splitting: do NOT split by commas globally because values
+    # often contain descriptive parentheses with commas. We split by ; or | only.
+    raw = (v or "")
+    base_parts = re.split(r"[;\|]", raw)
+    keywords: List[str] = []
+    for part in base_parts:
+        p = part.strip()
+        if not p:
+            continue
+        # full text as keyword
+        kw_full = _norm_text(p)
+        if kw_full and kw_full not in keywords:
+            keywords.append(kw_full)
+        # also add text before first parenthesis as a broader keyword
+        m = re.match(r"^(.*?)\s*\(", p)
+        if m:
+            base = _norm_text(m.group(1))
+            if base and base not in keywords:
+                keywords.append(base)
+    return keywords
 
 def _field_for(where_text: str) -> str:
     w = (where_text or "").lower()
@@ -198,6 +216,10 @@ def _canonicalize_costhead(value: str) -> str:
         return "Masonry and plaster material only"
     return s
 
+# ---------- Logging Utils ----------
+def _setup_logger(log_file: Path):
+    pass
+
 # ---------- Loaders ----------
 def load_gin(df_raw: pd.DataFrame) -> pd.DataFrame:
     gin = _detect_header(df_raw, key_words=("activity","wbs","sub","project","amount","issue","qty","item"))
@@ -229,12 +251,13 @@ def load_mapping(df_raw: pd.DataFrame) -> pd.DataFrame:
     comp = _pick_cols(mp, MAP_COMPOSITE_SYNS)
     if not comp.get("CostHead") or not comp.get("Value") or not comp.get("FromWhere"):
         raise ValueError("CostHead sheet not recognized. Expected: COST HEADS | parent WBS / Activity Name / Sub Project | From where")
-    return pd.DataFrame({
+    df = pd.DataFrame({
         "CostHead":  mp[comp["CostHead"]].fillna("").astype(str).map(_norm_text),
         "ValueRaw":  mp[comp["Value"]].fillna("").astype(str),
         "FromWhere": mp[comp["FromWhere"]].fillna("").astype(str),
         "Value":     mp[comp["Value"]].fillna("").astype(str).map(_norm_text),
     })
+    return df
 
 # ---------- Mapping ----------
 def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="contains"):
@@ -242,13 +265,8 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     tagged["CostHead"] = "Other"
     assigned_mask = pd.Series(False, index=tagged.index)
 
-    # Pre-assign special heads (Steel/Concrete/Masonry) via keywords, ignoring mapping file for these
-    specials = tagged.apply(_classify_special_head, axis=1)
-    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only"])
-    tagged.loc[special_mask, "CostHead"] = specials[special_mask]
-    assigned_mask = assigned_mask | special_mask
 
-    # Expand mapping rules (for remaining non-special rows only)
+    # Expand mapping rules FIRST (mapping takes precedence over specials except Steel/Concrete/Masonry targets)
     expanded = []
     special_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
     for _, r in mapping.iterrows():
@@ -269,15 +287,33 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
                     expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw})
     map_expanded = pd.DataFrame(expanded)
 
+    # Apply mapping rules before specials
+    assigned_by_mapping = 0
     if not map_expanded.empty:
         for _, mr in map_expanded.iterrows():
             field = mr["Field"]; kw = mr["Keyword"]; hay = tagged[field]
-            mask = (hay == kw) if match_mode == "exact" else hay.str.contains(re.escape(kw), na=False)
+            if match_mode == "exact":
+                mask = (hay == kw)
+            else:
+                try:
+                    mask = hay.str.contains(re.escape(kw), na=False)
+                except Exception:
+                    mask = hay.fillna("").astype(str).str.contains(kw, na=False)
             to_assign = mask & (~assigned_mask)
             if to_assign.any():
                 tagged.loc[to_assign, "CostHead"] = mr["CostHead"]
                 assigned_mask = assigned_mask | to_assign
+                assigned_now = int(to_assign.sum())
+                assigned_by_mapping += assigned_now
 
+    # Now pre-assign special heads only for still-unassigned rows
+    specials = tagged.apply(_classify_special_head, axis=1)
+    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only"]) & (~assigned_mask)
+    tagged.loc[special_mask, "CostHead"] = specials[special_mask]
+    assigned_mask = assigned_mask | special_mask
+
+
+    # Return after applying mapping and specials
     return tagged, map_expanded
 
 # ---------- Reallocate unmatched by SubProject ----------
@@ -315,6 +351,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         Dict with paths to generated files
     """
 
+    # Prepare logging/output early so we can trace the whole flow
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
     # Load the Excel files
     gin_xl = pd.ExcelFile(gin_filepath, engine="openpyxl")
     costhead_xl = pd.ExcelFile(costhead_filepath, engine="openpyxl")
@@ -351,6 +391,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # Canonicalize CostHead labels to avoid duplicates like STEEL vs Steel
     tagged_final["CostHead"] = tagged_final["CostHead"].apply(_canonicalize_costhead)
+
 
     # 3) Build reports from the final classification
     breakdown = (
@@ -434,8 +475,8 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         "STAIR, TYPICAL PASSAGE, BASEMENT PASSAGE, BASEMENT FOYER",
         "TERRACE FINISHING (WATERPROOFING AND FINISHING)",
         "Basement finishing only (including floor finishing, color and lighting, art work & excluding fire, basement exhaust)",
-        "Common plumbing (including pumps)",
-        "Common electric (geb, dg, tc to meter room and meter room to flat nCD",
+        "COMMON PLUMBING (INCLUDING PUMPS)",
+        "Common electric (geb, dg, tc to meter room and meter room to flat mcb)",
         "Fire (including basement exhaust)",
         "LANDSCAPE, OUTDOOR AMENITIES, GROUND FLOOR DRIVEWAY AND PARKING, COMPOUND WALL & GATE",
         "Indoor amenities",
@@ -445,7 +486,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         "Lift",
         "Consultants",
         "Overhead",
-        "Miscellaneous",
+        "MISCELLANOUS",
     ]
 
     combined_16 = "LANDSCAPE, OUTDOOR AMENITIES, GROUND FLOOR DRIVEWAY AND PARKING, COMPOUND WALL & GATE"
