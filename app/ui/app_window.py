@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 import io
 import json
+import sys
 
 from app.services.excel_service import load_excel, detect_numeric_columns
 from app.services.calc_service import add_sum_column, add_average_column
@@ -45,6 +46,15 @@ class AppWindow(ctk.CTk):
         # Bring window to front on launch
         self.after(100, self._bring_to_front)
 
+    def _resource_base(self) -> Path:
+        try:
+            return Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent.parent))
+        except Exception:
+            return Path.cwd()
+
+    def _asset_path(self, *parts: str) -> Path:
+        return self._resource_base().joinpath(*parts)
+
     def _ensure_app_icon(self):
         """Do not set a custom app icon (removed)."""
         return
@@ -68,7 +78,7 @@ class AppWindow(ctk.CTk):
 
         # Top-right theme toggle icon button
         try:
-            icon_path = Path("assets/day-and-night.png")
+            icon_path = self._asset_path("assets", "day-and-night.png")
             if icon_path.exists():
                 img = ctk.CTkImage(light_image=Image.open(icon_path), dark_image=Image.open(icon_path), size=(22, 22))
             else:

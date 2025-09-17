@@ -1,0 +1,27 @@
+✅ What to do
+You need to force the x86_64 slice of that universal Python when installing packages.
+Step 1. Recreate the environment
+rm -rf venv_x86
+arch -x86_64 python3 -m venv venv_x86
+source venv_x86/bin/activate
+
+Step 2. Install packages under x86_64 slice
+arch -x86_64 python -m pip install --upgrade pip wheel setuptools
+arch -x86_64 python -m pip install -r requirements.txt
+arch -x86_64 python -m pip install pyinstaller
+
+⚠️ Note the arch -x86_64 python ... prefix — that ensures the pip installer runs with the Intel slice of Python, so it downloads x86 wheels.
+
+Step 3. Confirm numpy arch
+file venv_x86/lib/python3.12/site-packages/numpy/_core/_multiarray_tests*.so
+
+It should now say:
+Mach-O 64-bit bundle x86_64
+
+
+Step 4. Build with PyInstaller
+arch -x86_64 python -m PyInstaller CostHead-Report-Generator.spec
+mv dist/CostHead-Report-Generator.app dist/CostHead-Report-Generator_x86.app
+
+
+✅ This way you’ll get a true Intel x86_64 build.
