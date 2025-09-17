@@ -11,12 +11,14 @@ def base_output_path(input_path: str) -> str:
 
 def export_csv(df: pd.DataFrame, base: str) -> str:
     out = base + "_output.csv"
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     df.to_csv(out, index=False)
     return out
 
 
 def export_excel(df: pd.DataFrame, base: str) -> str:
     out = base + "_output.xlsx"
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     df.to_excel(out, index=False)
     return out
 
