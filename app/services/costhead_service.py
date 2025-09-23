@@ -34,13 +34,27 @@ EXCLUDE_ANY_DESC = [
 ]
 EXCLUDE_ANY_GROUP = ["CPVC", "UPVC"]
 
+# Excluded keywords for ParentWBS fallback (unmatched items)
+# If any of these appear in ItemGroup/ItemDesc/Remarks, do NOT apply
+# ParentWBS-based fallbacks; instead list them under a special section
+# in the summary ("Unmatched Item Group & Items").
+EXCLUDED_UNMATCHED_KEYWORDS_DESC = [
+    # Add business-specific keywords here, examples:
+    # "DOOR FRAME", "WINDOW FRAME", "GLAZING"
+]
+EXCLUDED_UNMATCHED_KEYWORDS_GROUP = [
+    # Add group-level keywords here if needed
+    "BORING","WATERPROOING CHEMICALS","SUPREME AGRI","GI A CLASS",
+    "GI - A CLASS","GI B CLASS","GI - B CLASS","WATERPROOING CHEMICALS","TILE ADHESIVE","M.S. PLATE","LOAD BEARING PAD",
+]
+
 STEEL_KEYWORDS_DESC = [
     "TMT","REBAR","REINFORCEMENT","MS ROD","TOR STEEL","BINDING WIRE","STEEL BAR",
     "TMT BAR","DOWEL","CHAIR","REO","DEFORMED BAR","RIBBED BAR"
 ]
 STEEL_KEYWORDS_GROUP = ["STEEL"]
 STEEL_EXCLUDE_DESC = ["PPC","OPC","CEMENT","C CHANNEL","CHANNEL","MS C CHANNEL","M.S. C - CHANNEL"]
-STEEL_EXCLUDE_GROUP = ["CEMENT","PPC","OPC","CHANNEL"]
+STEEL_EXCLUDE_GROUP = ["CEMENT","PPC","OPC","CHANNEL","REBAR CHEMICAL"]
 
 CONCRETE_KEYWORDS_DESC = [
     "RMC","READY MIX","READY-MIX","READYMIX","TRANSIT MIX","PUMPED CONCRETE",
@@ -66,7 +80,7 @@ MASONRY_KEYWORDS_DESC = [
     "SIKA GROUT 214 1N","SIKA GROUT 214","GROUT 214","GROUT",
     "NON ISI PVC PIPE","PVC PIPE"
 ]
-MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC"]
+MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC","REBAR CHEMICAL"]
 
 # ---------- Helpers ----------
 def _clean_name(s: str) -> str:
@@ -172,6 +186,19 @@ def _is_globally_excluded(item_group: str, item_desc: str, remarks: str) -> bool
     for kw in EXCLUDE_ANY_GROUP:
         if kw in G:
             return True
+    return False
+
+def _is_excluded_for_unmatched(item_group: str, item_desc: str, remarks: str) -> bool:
+    """Check if a row should be excluded from ParentWBS fallback due to keywords."""
+    G = str(item_group or "").upper()
+    D = str(item_desc or "").upper()
+    R = str(remarks or "").upper()
+    if any(kw and kw.upper() in D for kw in EXCLUDED_UNMATCHED_KEYWORDS_DESC):
+        return True
+    if any(kw and kw.upper() in R for kw in EXCLUDED_UNMATCHED_KEYWORDS_DESC):
+        return True
+    if any(kw and kw.upper() in G for kw in EXCLUDED_UNMATCHED_KEYWORDS_GROUP):
+        return True
     return False
 
 def _classify_special_head(row: Dict) -> str:
@@ -325,13 +352,25 @@ def reallocate_unmatched_by_subproject(tagged: pd.DataFrame) -> pd.DataFrame:
 # ---------- Fallbacks based on ParentWBS for unmatched ----------
 def apply_parentwbs_fallbacks(tagged: pd.DataFrame) -> pd.DataFrame:
     t = tagged.copy()
+    # Track rows excluded from fallback by excluded keywords
+    t["__ExcludedByKeywords__"] = False
     is_other = (t["CostHead"] == "Other")
+    # Identify excluded unmatched rows first: match excluded keywords AND has Activity
+    has_activity = t["ActivityName"].fillna("") != ""
+    excl_mask = is_other & has_activity & t.apply(
+        lambda r: _is_excluded_for_unmatched(r.get("ItemGroup"), r.get("ItemDesc"), r.get("Remarks")), axis=1
+    )
+    if excl_mask.any():
+        t.loc[excl_mask, "__ExcludedByKeywords__"] = True
+
+    # Only apply fallbacks to those not excluded
+    candidates = is_other & (~t["__ExcludedByKeywords__"])
     wbs_norm = t["ParentWBS"].fillna("").astype(str).map(_norm_text)
-    mask_masonry = is_other & (
+    mask_masonry = candidates & (
         wbs_norm.str.contains(r"\bMASONARY WORK\b", regex=True) |
         wbs_norm.str.contains(r"\bINTERNAL PLASTER WORK\b", regex=True)
     )
-    mask_concrete = is_other & wbs_norm.str.contains(r"\bRCC WORK\b", regex=True)
+    mask_concrete = candidates & wbs_norm.str.contains(r"\bRCC WORK\b", regex=True)
     t.loc[mask_masonry, "CostHead"] = "Masonry and plaster material only"
     t.loc[mask_concrete, "CostHead"] = "Concrete"
     return t
@@ -383,7 +422,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # 1) Apply mapping (with special heads pre-assigned)
     tagged, map_expanded = assign_cost_head(gin, mapping, match_mode=match_mode)
 
-    # 1b) Apply ParentWBS-based fallbacks so these are not counted as unmatched
+    # Snapshot BEFORE fallbacks for unmatched views (so details include rows pre-fallback)
+    tagged_before_fallbacks = tagged.copy()
+
+    # 1b) Apply ParentWBS-based fallbacks so these are not counted as unmatched in final allocation
     tagged = apply_parentwbs_fallbacks(tagged)
 
     # 2) Reallocate any remaining "Other" by SubProject rules
@@ -551,8 +593,8 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # )
     # summary = summary.merge(srcs, on="CostHead", how="left")
 
-    # For audit, show what *would have been* unmatched before we reallocated
-    other_before = tagged[tagged["CostHead"] == "Other"].copy()
+    # For audit, show what *would have been* unmatched BEFORE we reallocated (use snapshot)
+    other_before = tagged_before_fallbacks[tagged_before_fallbacks["CostHead"] == "Other"].copy()
 
     # Amenities: rows without ActivityName or ParentWBS
     def _fmt_amenity_name(sp: str) -> str:
@@ -587,13 +629,16 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     )
 
     # Include amenities also in unmatched views
+    # IMPORTANT: Build unmatched sheets from FINAL allocation so anything
+    # that got allocated by fallbacks/mapping does NOT remain in unmatched
+    final_other = tagged_final[tagged_final["CostHead"] == "Other"].copy()
     unmatched_detail = (
-        other_before[["ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc","IssueQty","Amount"]]
+        final_other[["ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc","IssueQty","Amount"]]
         .copy().rename(columns={"Amount":"IssueAmt"})
         .sort_values(["SubProject","ActivityName","ParentWBS","Project"])
     )
     unmatched_by_sp = (
-        other_before.groupby(["SubProject","ActivityName","ParentWBS","Project"], as_index=False)["Amount"]
+        final_other.groupby(["SubProject","ActivityName","ParentWBS","Project"], as_index=False)["Amount"]
         .sum().rename(columns={"Amount":"TotalAmount"})
         .sort_values(["SubProject","TotalAmount"], ascending=[True, False])
     )
@@ -610,6 +655,57 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # Track the position (Excel row) of the amenities header for formatting
     summary_base_len = len(summary)
     summary = pd.concat([summary, amenities_header, amenities_as_costhead], ignore_index=True)
+
+    # Build special section for excluded unmatched items by keywords for allowed SubProjects only
+    def _is_allowed_sp_for_unmatched(sp: str) -> bool:
+        return _is_allowed_subproject(sp)
+
+    # Rows that remained Other before fallbacks AND were excluded by keywords
+    excluded_unmatched = other_before.copy()
+    if "__ExcludedByKeywords__" in tagged.columns:
+        # Merge the flag from current tagged by index alignment
+        flag_series = tagged.get("__ExcludedByKeywords__").fillna(False)
+        if len(flag_series) == len(excluded_unmatched):
+            excluded_unmatched["__ExcludedByKeywords__"] = flag_series.values
+        else:
+            # Best-effort: recompute
+            excluded_unmatched["__ExcludedByKeywords__"] = excluded_unmatched.apply(
+                lambda r: _is_excluded_for_unmatched(r.get("ItemGroup"), r.get("ItemDesc"), r.get("Remarks")), axis=1
+            )
+    else:
+        excluded_unmatched["__ExcludedByKeywords__"] = excluded_unmatched.apply(
+            lambda r: _is_excluded_for_unmatched(r.get("ItemGroup"), r.get("ItemDesc"), r.get("Remarks")), axis=1
+        )
+
+    # Keep only excluded with Activity (per latest rule)
+    excluded_unmatched = excluded_unmatched[(excluded_unmatched["__ExcludedByKeywords__"] == True) & (excluded_unmatched["ActivityName"].fillna("") != "")]
+    # Keep only Podium or Tower A-Z
+    excluded_unmatched = excluded_unmatched[excluded_unmatched["SubProject"].apply(_is_allowed_sp_for_unmatched)]
+
+    if not excluded_unmatched.empty:
+        # Group by SubProject and aggregate amounts and items
+        ex_items = (
+            excluded_unmatched.groupby("SubProject")
+            .apply(lambda g: "; ".join(sorted(set(_token(r) for _, r in g.iterrows()))))
+            .reset_index(name="ITEM Remark")
+        )
+        ex_summary = (
+            excluded_unmatched.groupby("SubProject", as_index=False)["Amount"]
+            .sum().rename(columns={"Amount":"Material TotalAmount"})
+            .sort_values("SubProject")
+        )
+        ex_summary = ex_summary.merge(ex_items, on="SubProject", how="left")
+        unmatched_items_as_costhead = ex_summary.rename(columns={"SubProject":"CostHead"})[
+            ["CostHead","Material TotalAmount","ITEM Remark"]
+        ]
+        unmatched_items_header = pd.DataFrame({
+            "CostHead": ["Unmatched Item Group & Items"],
+            "Material TotalAmount": [""],
+            "ITEM Remark": [""]
+        })
+        # Append after amenities block
+        unmatched_base_len = len(summary)
+        summary = pd.concat([summary, unmatched_items_header, unmatched_items_as_costhead], ignore_index=True)
 
     # 4) Create output directory and write reports
     output_path = Path(output_dir)
@@ -653,6 +749,31 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
                 item_col_idx = summary.columns.get_loc("ITEM Remark") + 1
                 cell = ws.cell(row=indoor_item_excel_row, column=item_col_idx)
                 cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
+        except Exception:
+            pass
+
+        # Apply formatting to the Unmatched Item Group & Items header row similar to amenities header
+        try:
+            ws = xw.sheets["CostHead_Summary"]
+            # Find the row index of the unmatched header by searching first column values
+            # Since we appended in order, scan for exact header text
+            n_rows = summary.shape[0]
+            header_row_idx = None
+            for i in range(2, n_rows + 2):  # 1-based rows with header
+                val = ws.cell(row=i, column=1).value
+                if str(val).strip().upper() == "UNMATCHED ITEM GROUP & ITEMS":
+                    header_row_idx = i
+                    break
+            if header_row_idx is not None:
+                n_cols = summary.shape[1]
+                fill = PatternFill(fill_type="solid", start_color="FFEFEFEF", end_color="FFEFEFEF")
+                font = Font(bold=True)
+                align = Alignment(horizontal="left")
+                for c in range(1, n_cols + 1):
+                    cell = ws.cell(row=header_row_idx, column=c)
+                    cell.fill = fill
+                    cell.font = font
+                    cell.alignment = align
         except Exception:
             pass
 
