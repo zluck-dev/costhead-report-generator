@@ -56,6 +56,23 @@ STEEL_KEYWORDS_GROUP = ["STEEL"]
 STEEL_EXCLUDE_DESC = ["PPC","OPC","CEMENT","C CHANNEL","CHANNEL","MS C CHANNEL","M.S. C - CHANNEL"]
 STEEL_EXCLUDE_GROUP = ["CEMENT","PPC","OPC","CHANNEL","REBAR CHEMICAL"]
 
+# Optional excludes for Concrete and Masonry classification (similar to Steel)
+CONCRETE_EXCLUDE_DESC = [
+    # e.g., "MASONRY", "BLOCK", "BRICK"
+]
+CONCRETE_EXCLUDE_GROUP = [
+    # e.g., "MASONRY"
+]
+
+# Exclude lists for Masonry classification
+MASONRY_EXCLUDE_DESC = [
+    # e.g., "CONCRETE", "RMC"
+]
+MASONRY_EXCLUDE_GROUP = [
+    # e.g., "CONCRETE", "RMC"
+    "SUPREME AGRI"
+]
+
 CONCRETE_KEYWORDS_DESC = [
     "RMC","READY MIX","READY-MIX","READYMIX","TRANSIT MIX","PUMPED CONCRETE",
     "M20","M25","M30","M35","M40","DESIGN MIX","SITE MIX CONCRETE",
@@ -219,14 +236,17 @@ def _classify_special_head(row: Dict) -> str:
             return "Steel"
 
     if sp_allowed and (any(kw in hay_desc for kw in MASONRY_KEYWORDS_DESC) or any(kw in hay_group for kw in MASONRY_KEYWORDS_GROUP)):
-        return "Masonry and plaster material only"
+        # Respect Masonry excludes
+        if not (any(x in hay_desc for x in MASONRY_EXCLUDE_DESC) or any(x in hay_group for x in MASONRY_EXCLUDE_GROUP)):
+            return "Masonry and plaster material only"
 
     if sp_allowed:
+        # Respect Concrete excludes
         for kw in CONCRETE_KEYWORDS_DESC:
-            if kw in hay_desc:
+            if kw in hay_desc and not (any(x in hay_desc for x in CONCRETE_EXCLUDE_DESC) or any(x in hay_group for x in CONCRETE_EXCLUDE_GROUP)):
                 return "Concrete"
         for kw in CONCRETE_KEYWORDS_GROUP:
-            if kw in hay_group:
+            if kw in hay_group and not (any(x in hay_desc for x in CONCRETE_EXCLUDE_DESC) or any(x in hay_group for x in CONCRETE_EXCLUDE_GROUP)):
                 return "Concrete"
 
     return "Other"
