@@ -1,18 +1,42 @@
-charset-normalizer==3.4.3
-customtkinter==5.2.2
-darkdetect==0.8.0
-et_xmlfile==2.0.0
-lxml==6.0.1
+# Core Excel processing dependencies
+pandas==2.3.2
 numpy==2.3.2
 openpyxl==3.1.5
-packaging==25.0
-pandas==2.3.2
+lxml==6.0.1
+python-docx==1.2.0
+reportlab==4.4.3
+
+# Streamlit web app dependencies
+streamlit==1.50.0
+streamlit-option-menu==0.4.0
+
+# File handling and utilities
 pillow==10.4.0
+et_xmlfile==2.0.0
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 pytz==2025.2
 reportlab==4.4.3
 six==1.17.0
-ttkbootstrap==1.14.2
 typing_extensions==4.15.0
+charset-normalizer==3.4.3
 tzdata==2025.2
+
+# Optional: Keep these for desktop version compatibility
+customtkinter==5.2.2
+darkdetect==0.8.0
+ttkbootstrap==1.14.2
+
+# Additional Streamlit dependencies (auto-installed)
+# altair>=4.0,<6
+# blinker>=1.5.0,<2
+# cachetools>=4.0,<7
+# click>=7.0,<9
+# protobuf>=3.20,<7
+# pyarrow>=7.0
+# requests>=2.27,<3
+# tenacity>=8.1.0,<10
+# toml>=0.10.1,<2
+# tornado>=6.0.3,<7
+# gitpython>=3.0.7,<4
+# pydeck>=0.8.0b4,<1
