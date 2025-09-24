@@ -66,12 +66,14 @@ def main():
     if 'costhead_file' not in st.session_state:
         st.session_state.costhead_file = None
 
-    # Sidebar for file uploads
-    with st.sidebar:
-        st.markdown("## 📁 File Upload")
+    # File upload section in main area
+    st.markdown('<div class="section-header">📁 File Upload</div>', unsafe_allow_html=True)
 
-        # Activities file upload
-        st.markdown("### Activities (Master) File")
+    # Create three columns for file uploads
+    upload_col1, upload_col2, upload_col3 = st.columns(3)
+
+    with upload_col1:
+        st.markdown("### 📊 Activities (Master)")
         activities_file = st.file_uploader(
             "Upload Activities Excel file",
             type=['xlsx', 'xls'],
@@ -84,17 +86,12 @@ def main():
                 # Load the first sheet automatically
                 activities_df = load_sheet(activities_file, list_sheets(activities_file)[0])
                 st.session_state.activities_df = activities_df
-                st.success(f"✅ Loaded {len(activities_df)} rows from activities file")
-
-                # Show preview
-                with st.expander("Preview Activities Data"):
-                    st.dataframe(activities_df.head(10))
-
+                st.success(f"✅ Loaded {len(activities_df)} rows")
             except Exception as e:
-                st.error(f"❌ Error loading activities file: {str(e)}")
+                st.error(f"❌ Error: {str(e)}")
 
-        # GIN file upload
-        st.markdown("### GIN (Good Issue Note) File")
+    with upload_col2:
+        st.markdown("### 📋 GIN (Good Issue Note)")
         gin_file = st.file_uploader(
             "Upload GIN Excel file",
             type=['xlsx', 'xls'],
@@ -107,17 +104,12 @@ def main():
                 # Load the first sheet automatically
                 gin_df = load_sheet(gin_file, list_sheets(gin_file)[0])
                 st.session_state.gin_df = gin_df
-                st.success(f"✅ Loaded {len(gin_df)} rows from GIN file")
-
-                # Show preview
-                with st.expander("Preview GIN Data"):
-                    st.dataframe(gin_df.head(10))
-
+                st.success(f"✅ Loaded {len(gin_df)} rows")
             except Exception as e:
-                st.error(f"❌ Error loading GIN file: {str(e)}")
+                st.error(f"❌ Error: {str(e)}")
 
-        # CostHead mapping file upload
-        st.markdown("### CostHead Mapping File")
+    with upload_col3:
+        st.markdown("### 🗂️ CostHead Mapping")
         costhead_file = st.file_uploader(
             "Upload CostHead mapping Excel file",
             type=['xlsx', 'xls'],
@@ -127,31 +119,33 @@ def main():
 
         if costhead_file is not None:
             st.session_state.costhead_file = costhead_file
-            st.success("✅ CostHead mapping file uploaded")
+            st.success("✅ CostHead mapping uploaded")
 
-    # Main content area
-    st.markdown('<div class="section-header">📋 Data Overview</div>', unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)  # Add space
 
-    # Display current status
-    status_col1, status_col2, status_col3 = st.columns(3)
+    # Main content area - Data Overview hidden
+    # st.markdown('<div class="section-header">📋 Data Overview</div>', unsafe_allow_html=True)
 
-    with status_col1:
-        if st.session_state.activities_df is not None:
-            st.metric("Activities Rows", len(st.session_state.activities_df))
-        else:
-            st.metric("Activities Rows", "Not loaded")
+    # Display current status - hidden
+    # status_col1, status_col2, status_col3 = st.columns(3)
 
-    with status_col2:
-        if st.session_state.gin_df is not None:
-            st.metric("GIN Rows", len(st.session_state.gin_df))
-        else:
-            st.metric("GIN Rows", "Not loaded")
+    # with status_col1:
+    #     if st.session_state.activities_df is not None:
+    #         st.metric("Activities Rows", len(st.session_state.activities_df))
+    #     else:
+    #         st.metric("Activities Rows", "Not loaded")
 
-    with status_col3:
-        if st.session_state.costhead_file is not None:
-            st.metric("CostHead File", "✅ Ready")
-        else:
-            st.metric("CostHead File", "❌ Not loaded")
+    # with status_col2:
+    #     if st.session_state.gin_df is not None:
+    #         st.metric("GIN Rows", len(st.session_state.gin_df))
+    #     else:
+    #         st.metric("GIN Rows", "Not loaded")
+
+    # with status_col3:
+    #     if st.session_state.costhead_file is not None:
+    #         st.metric("CostHead File", "✅ Ready")
+    #     else:
+    #         st.metric("CostHead File", "❌ Not loaded")
 
     # Generate report button - centered and prominent
     st.markdown("<br>", unsafe_allow_html=True)  # Add some space
@@ -161,6 +155,17 @@ def main():
         match_mode = "contains"  # Default to contains mode
         if st.button("🚀 Generate CostHead Report", type="primary", use_container_width=True, key="generate_btn"):
             generate_report(match_mode)
+
+    # Clear button below generate button - only show if files are uploaded
+    if (st.session_state.activities_df is not None or
+        st.session_state.gin_df is not None or
+        st.session_state.costhead_file is not None):
+
+        st.markdown("<br>", unsafe_allow_html=True)  # Add some space
+        clear_col1, clear_col2, clear_col3 = st.columns([1, 1, 1])
+        with clear_col2:
+            if st.button("🗑️ Clear All Data", use_container_width=True):
+                clear_data()
 
     st.markdown("<br>", unsafe_allow_html=True)  # Add some space
 
@@ -292,11 +297,7 @@ def clear_data():
     st.session_state.costhead_file = None
     st.rerun()
 
-# Add clear button in sidebar
-with st.sidebar:
-    st.markdown("---")
-    if st.button("🗑️ Clear All Data", use_container_width=True):
-        clear_data()
+# Clear button moved above - removed from here
 
 if __name__ == "__main__":
     main()
