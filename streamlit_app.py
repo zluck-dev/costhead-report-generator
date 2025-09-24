@@ -77,7 +77,7 @@ def main():
         activities_file = st.file_uploader(
             "Upload Activities Excel file",
             type=['xlsx', 'xls'],
-            key="activities_upload",
+            key=f"activities_upload_{st.session_state.get('clear_counter', 0)}",
             help="Upload the master activities Excel file"
         )
 
@@ -95,7 +95,7 @@ def main():
         gin_file = st.file_uploader(
             "Upload GIN Excel file",
             type=['xlsx', 'xls'],
-            key="gin_upload",
+            key=f"gin_upload_{st.session_state.get('clear_counter', 0)}",
             help="Upload the GIN Excel file"
         )
 
@@ -113,7 +113,7 @@ def main():
         costhead_file = st.file_uploader(
             "Upload CostHead mapping Excel file",
             type=['xlsx', 'xls'],
-            key="costhead_upload",
+            key=f"costhead_upload_{st.session_state.get('clear_counter', 0)}",
             help="Upload the CostHead mapping Excel file"
         )
 
@@ -292,9 +292,20 @@ def generate_report(match_mode):
 
 def clear_data():
     """Clear all uploaded data"""
+    # Clear all session state data
     st.session_state.activities_df = None
     st.session_state.gin_df = None
     st.session_state.costhead_file = None
+
+    # Clear file uploader states by using unique keys
+    if 'clear_counter' not in st.session_state:
+        st.session_state.clear_counter = 0
+    st.session_state.clear_counter += 1
+
+    # Show success message
+    st.success("✅ All data cleared successfully!")
+
+    # Force a complete page refresh
     st.rerun()
 
 # Clear button moved above - removed from here
