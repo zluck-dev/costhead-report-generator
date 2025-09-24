@@ -33,7 +33,7 @@ st.markdown("""
     .section-header {
         font-size: 1.5rem;
         font-weight: bold;
-        color: #2c3e50;
+        color: #ffffff;
         margin-top: 2rem;
         margin-bottom: 1rem;
     }
@@ -130,45 +130,39 @@ def main():
             st.success("✅ CostHead mapping file uploaded")
 
     # Main content area
-    col1, col2 = st.columns([2, 1])
+    st.markdown('<div class="section-header">📋 Data Overview</div>', unsafe_allow_html=True)
 
-    with col1:
-        st.markdown('<div class="section-header">📋 Data Overview</div>', unsafe_allow_html=True)
+    # Display current status
+    status_col1, status_col2, status_col3 = st.columns(3)
 
-        # Display current status
-        status_col1, status_col2, status_col3 = st.columns(3)
+    with status_col1:
+        if st.session_state.activities_df is not None:
+            st.metric("Activities Rows", len(st.session_state.activities_df))
+        else:
+            st.metric("Activities Rows", "Not loaded")
 
-        with status_col1:
-            if st.session_state.activities_df is not None:
-                st.metric("Activities Rows", len(st.session_state.activities_df))
-            else:
-                st.metric("Activities Rows", "Not loaded")
+    with status_col2:
+        if st.session_state.gin_df is not None:
+            st.metric("GIN Rows", len(st.session_state.gin_df))
+        else:
+            st.metric("GIN Rows", "Not loaded")
 
-        with status_col2:
-            if st.session_state.gin_df is not None:
-                st.metric("GIN Rows", len(st.session_state.gin_df))
-            else:
-                st.metric("GIN Rows", "Not loaded")
+    with status_col3:
+        if st.session_state.costhead_file is not None:
+            st.metric("CostHead File", "✅ Ready")
+        else:
+            st.metric("CostHead File", "❌ Not loaded")
 
-        with status_col3:
-            if st.session_state.costhead_file is not None:
-                st.metric("CostHead File", "✅ Ready")
-            else:
-                st.metric("CostHead File", "❌ Not loaded")
+    # Generate report button - centered and prominent
+    st.markdown("<br>", unsafe_allow_html=True)  # Add some space
 
-    with col2:
-        st.markdown('<div class="section-header">⚙️ Settings</div>', unsafe_allow_html=True)
-
-        # Match mode selection
-        match_mode = st.selectbox(
-            "Match Mode",
-            ["contains", "exact"],
-            help="Choose how to match keywords in the CostHead mapping"
-        )
-
-        # Generate report button
-        if st.button("🚀 Generate CostHead Report", type="primary", use_container_width=True):
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+    with col_btn2:
+        match_mode = "contains"  # Default to contains mode
+        if st.button("🚀 Generate CostHead Report", type="primary", use_container_width=True, key="generate_btn"):
             generate_report(match_mode)
+
+    st.markdown("<br>", unsafe_allow_html=True)  # Add some space
 
     # Data preview section
     if st.session_state.activities_df is not None or st.session_state.gin_df is not None:
