@@ -44,7 +44,7 @@ EXCLUDED_UNMATCHED_KEYWORDS_DESC = [
 ]
 EXCLUDED_UNMATCHED_KEYWORDS_GROUP = [
     # Add group-level keywords here if needed
-    "BORING","WATERPROOING CHEMICALS","SUPREME AGRI","GI A CLASS",
+    "BORING","WATERPROOING CHEMICALS","SUPREME AGRI","GI A CLASS","CEMENT SHEET",
     "GI - A CLASS","GI B CLASS","GI - B CLASS","WATERPROOING CHEMICALS","TILE ADHESIVE","M.S. PLATE","LOAD BEARING PAD",
 ]
 
@@ -82,9 +82,10 @@ CONCRETE_KEYWORDS_DESC = [
     "SLAG 80-100MM","SLAG 40-80MM","SLAG",
     "6MM MAMRI","MAMRI 6MM",
     "GSB",
-    "20MM KAPCHI","KAPCHI 20MM"
+    "20MM KAPCHI","KAPCHI 20MM",
+    "RUBBLE"
 ]
-CONCRETE_KEYWORDS_GROUP = ["CONCRETE","CEMENT CONCRETE","RMC","READY MIX","OPC"]
+CONCRETE_KEYWORDS_GROUP = ["CONCRETE","CEMENT CONCRETE","RMC","READY MIX","OPC","WATERPROOFING HARDWARE"]
 
 MASONRY_KEYWORDS_DESC = [
     "RIVER SAND","POICHA","M SAND","MSAND","SAND",
@@ -97,7 +98,8 @@ MASONRY_KEYWORDS_DESC = [
     "SIKA GROUT 214 1N","SIKA GROUT 214","GROUT 214","GROUT",
     "NON ISI PVC PIPE","PVC PIPE"
 ]
-MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC","REBAR CHEMICAL"]
+MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC",
+                          "REBAR CHEMICAL","NON ISI PLUMBING","REGULAR HARDWARE"]
 
 # ---------- Helpers ----------
 def _clean_name(s: str) -> str:
@@ -187,7 +189,7 @@ def _norm_sub(s: str) -> str:
 
 def _is_allowed_subproject(sp: str) -> bool:
     spn = _norm_sub(sp)
-    if spn == "PODIUM":
+    if spn == "PODIUM" or spn == "NON TOWER AREA":
         return True
     if spn.startswith("TOWER ") and len(spn) == len("TOWER X"):
         letter = spn.split(" ")[-1]
@@ -195,14 +197,31 @@ def _is_allowed_subproject(sp: str) -> bool:
     return False
 
 # ---------- Special Heads Classifier ----------
+def _contains_exact_keyword(text: str, keywords: List[str]) -> bool:
+    """Check if text contains any of the keywords as complete words (not substrings)"""
+    if not text or not keywords:
+        return False
+    text_upper = text.upper()
+    for keyword in keywords:
+        keyword_upper = keyword.upper()
+        # For keywords with special characters like parentheses, use exact matching
+        if '(' in keyword_upper or ')' in keyword_upper:
+            if keyword_upper in text_upper:
+                return True
+        else:
+            # Use word boundaries for simple keywords
+            import re
+            pattern = r'\b' + re.escape(keyword_upper) + r'\b'
+            if re.search(pattern, text_upper):
+                return True
+    return False
+
 def _is_globally_excluded(item_group: str, item_desc: str, remarks: str) -> bool:
     G, D, R = (str(item_group or "").upper(), str(item_desc or "").upper(), str(remarks or "").upper())
-    for kw in EXCLUDE_ANY_DESC:
-        if kw in D or kw in R:
-            return True
-    for kw in EXCLUDE_ANY_GROUP:
-        if kw in G:
-            return True
+    if _contains_exact_keyword(D, EXCLUDE_ANY_DESC) or _contains_exact_keyword(R, EXCLUDE_ANY_DESC):
+        return True
+    if _contains_exact_keyword(G, EXCLUDE_ANY_GROUP):
+        return True
     return False
 
 def _is_excluded_for_unmatched(item_group: str, item_desc: str, remarks: str) -> bool:
@@ -210,11 +229,11 @@ def _is_excluded_for_unmatched(item_group: str, item_desc: str, remarks: str) ->
     G = str(item_group or "").upper()
     D = str(item_desc or "").upper()
     R = str(remarks or "").upper()
-    if any(kw and kw.upper() in D for kw in EXCLUDED_UNMATCHED_KEYWORDS_DESC):
+    if _contains_exact_keyword(D, EXCLUDED_UNMATCHED_KEYWORDS_DESC):
         return True
-    if any(kw and kw.upper() in R for kw in EXCLUDED_UNMATCHED_KEYWORDS_DESC):
+    if _contains_exact_keyword(R, EXCLUDED_UNMATCHED_KEYWORDS_DESC):
         return True
-    if any(kw and kw.upper() in G for kw in EXCLUDED_UNMATCHED_KEYWORDS_GROUP):
+    if _contains_exact_keyword(G, EXCLUDED_UNMATCHED_KEYWORDS_GROUP):
         return True
     return False
 
@@ -230,23 +249,23 @@ def _classify_special_head(row: Dict) -> str:
     if _is_globally_excluded(g, d, r):
         return "Other"
 
-    steel_hit = any(kw in hay_desc for kw in STEEL_KEYWORDS_DESC) or any(kw in hay_group for kw in STEEL_KEYWORDS_GROUP)
+    steel_hit = _contains_exact_keyword(hay_desc, STEEL_KEYWORDS_DESC) or _contains_exact_keyword(hay_group, STEEL_KEYWORDS_GROUP)
     if steel_hit:
-        if sp_allowed and not (any(x in hay_desc for x in STEEL_EXCLUDE_DESC) or any(x in hay_group for x in STEEL_EXCLUDE_GROUP)):
+        if sp_allowed and not (_contains_exact_keyword(hay_desc, STEEL_EXCLUDE_DESC) or _contains_exact_keyword(hay_group, STEEL_EXCLUDE_GROUP)):
             return "Steel"
 
-    if sp_allowed and (any(kw in hay_desc for kw in MASONRY_KEYWORDS_DESC) or any(kw in hay_group for kw in MASONRY_KEYWORDS_GROUP)):
+    if sp_allowed and (_contains_exact_keyword(hay_desc, MASONRY_KEYWORDS_DESC) or _contains_exact_keyword(hay_group, MASONRY_KEYWORDS_GROUP)):
         # Respect Masonry excludes
-        if not (any(x in hay_desc for x in MASONRY_EXCLUDE_DESC) or any(x in hay_group for x in MASONRY_EXCLUDE_GROUP)):
+        if not (_contains_exact_keyword(hay_desc, MASONRY_EXCLUDE_DESC) or _contains_exact_keyword(hay_group, MASONRY_EXCLUDE_GROUP)):
             return "Masonry and plaster material only"
 
     if sp_allowed:
         # Respect Concrete excludes
         for kw in CONCRETE_KEYWORDS_DESC:
-            if kw in hay_desc and not (any(x in hay_desc for x in CONCRETE_EXCLUDE_DESC) or any(x in hay_group for x in CONCRETE_EXCLUDE_GROUP)):
+            if _contains_exact_keyword(hay_desc, [kw]) and not (_contains_exact_keyword(hay_desc, CONCRETE_EXCLUDE_DESC) or _contains_exact_keyword(hay_group, CONCRETE_EXCLUDE_GROUP)):
                 return "Concrete"
         for kw in CONCRETE_KEYWORDS_GROUP:
-            if kw in hay_group and not (any(x in hay_desc for x in CONCRETE_EXCLUDE_DESC) or any(x in hay_group for x in CONCRETE_EXCLUDE_GROUP)):
+            if _contains_exact_keyword(hay_group, [kw]) and not (_contains_exact_keyword(hay_desc, CONCRETE_EXCLUDE_DESC) or _contains_exact_keyword(hay_group, CONCRETE_EXCLUDE_GROUP)):
                 return "Concrete"
 
     return "Other"
@@ -312,8 +331,13 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     tagged["CostHead"] = "Other"
     assigned_mask = pd.Series(False, index=tagged.index)
 
+    # FIRST: Apply special heads (Steel, Concrete, Masonry) based on keywords
+    specials = tagged.apply(_classify_special_head, axis=1)
+    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only"])
+    tagged.loc[special_mask, "CostHead"] = specials[special_mask]
+    assigned_mask = assigned_mask | special_mask
 
-    # Expand mapping rules FIRST (mapping takes precedence over specials except Steel/Concrete/Masonry targets)
+    # SECOND: Apply mapping rules only to remaining unassigned rows
     expanded = []
     special_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
     for _, r in mapping.iterrows():
@@ -334,7 +358,7 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
                     expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw})
     map_expanded = pd.DataFrame(expanded)
 
-    # Apply mapping rules before specials
+    # Apply mapping rules only to unassigned rows
     assigned_by_mapping = 0
     if not map_expanded.empty:
         for _, mr in map_expanded.iterrows():
@@ -353,14 +377,7 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
                 assigned_now = int(to_assign.sum())
                 assigned_by_mapping += assigned_now
 
-    # Now pre-assign special heads only for still-unassigned rows
-    specials = tagged.apply(_classify_special_head, axis=1)
-    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only"]) & (~assigned_mask)
-    tagged.loc[special_mask, "CostHead"] = specials[special_mask]
-    assigned_mask = assigned_mask | special_mask
-
-
-    # Return after applying mapping and specials
+    # Return after applying specials first, then mapping
     return tagged, map_expanded
 
 # ---------- Reallocate unmatched by SubProject ----------
@@ -457,9 +474,9 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # 3) Build reports from the final classification
     breakdown = (
-        tagged_final.groupby(["CostHead","ActivityName","ParentWBS","SubProject","Project"], as_index=False)["Amount"]
+        tagged_final.groupby(["CostHead","ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc"], as_index=False)["Amount"]
         .sum().rename(columns={"Amount":"TotalAmount"})
-        .sort_values(["CostHead","ActivityName","ParentWBS","SubProject","Project"])
+        .sort_values(["CostHead","ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc"])
     )
 
     matched_final = tagged_final.copy()  # everything, since we've allocated
@@ -621,8 +638,8 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         s = _norm_sub(sp)
         if s.startswith("TOWER ") and len(s) == len("TOWER X"):
             return s.replace(" ", " - ") + " ( No Activity Code )"
-        if s == "PODIUM":
-            return "PODIUM ( No Activity Code )"
+        if s == "PODIUM" or s == "NON TOWER AREA":
+            return "PODIUM / NON TOWER AREA ( No Activity Code )"
         return f"{s} ( No Activity Code )" if s else "( No Activity Code )"
 
     amenities_mask = (other_before["ActivityName"].fillna("") == "") | (other_before["ParentWBS"].fillna("") == "")
