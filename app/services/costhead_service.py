@@ -4,6 +4,7 @@ import warnings
 from typing import List, Dict, Tuple
 from pathlib import Path
 from openpyxl.styles import PatternFill, Font, Alignment
+from .gst_service import process_gst_for_gin_mapped
 
 warnings.filterwarnings("ignore")
 
@@ -413,7 +414,7 @@ def apply_parentwbs_fallbacks(tagged: pd.DataFrame) -> pd.DataFrame:
     return t
 
 # ---------- Main CostHead Report Function ----------
-def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_dir: str, match_mode: str = "contains") -> Dict[str, str]:
+def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_dir: str, match_mode: str = "contains", gst_filepath = None) -> Dict[str, str]:
     """
     Generate CostHead reports based on the build_costhead_report_v9.py script
 
@@ -422,6 +423,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         costhead_filepath: Path to the CostHead Excel file
         output_dir: Directory to save the output reports
         match_mode: "contains" or "exact" for matching mode
+        gst_filepath: Optional path to GST Excel file or UploadedFile object
 
     Returns:
         Dict with paths to generated files
@@ -450,6 +452,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # Process the data
     gin = load_gin(gin_raw)
+
+    # Process GST if GST file is provided
+    if gst_filepath:
+        gin = process_gst_for_gin_mapped(gin, gst_filepath)
 
     # Removed global SubProject filtering; filtering is enforced only for Steel/Concrete/Masonry within classifier
 

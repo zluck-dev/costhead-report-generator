@@ -26,7 +26,7 @@ def _pick_column(df: pd.DataFrame, candidates):
     print(f"Available columns: {list(df.columns)}")
     cleaned_to_original = { _clean(c): c for c in df.columns }
     print(f"Cleaned columns: {cleaned_to_original}")
-    
+
     for cand in candidates:
         cand_clean = _clean(cand)
         print(f"Trying candidate: '{cand}' -> cleaned: '{cand_clean}'")
@@ -67,7 +67,7 @@ def _normalize_code_series(s: pd.Series) -> pd.Series:
 def build_activity_lookup(df_activities: pd.DataFrame, code_col: str, wbs_col: str, name_col: str) -> pd.DataFrame:
     print(f"\nBuilding lookup with columns: code='{code_col}', wbs='{wbs_col}', name='{name_col}'")
     print(f"Activities DataFrame columns: {list(df_activities.columns)}")
-    
+
     lookup = df_activities[[code_col, wbs_col, name_col]].copy()
     # Normalize codes to strings for safe join
     lookup[code_col] = _normalize_code_series(lookup[code_col])
@@ -88,7 +88,7 @@ def merge_gin_with_lookup(
     print(f"GIN DataFrame columns: {list(df_gin.columns)}")
     print(f"GIN code column: '{gin_code_col}'")
     print(f"Activities lookup columns: {list(activities_lookup.columns)}")
-    
+
     gin = df_gin.copy()
     # Normalize code in GIN
     gin[gin_code_col] = _normalize_code_series(gin[gin_code_col])
@@ -96,7 +96,7 @@ def merge_gin_with_lookup(
     # Align code column name for merge
     left = gin.rename(columns={gin_code_col: "ActivityCode"})
     print(f"After rename, left columns: {list(left.columns)}")
-    
+
     merged = left.merge(activities_lookup, on="ActivityCode", how="left")
     print(f"After merge, columns: {list(merged.columns)}")
 
@@ -109,20 +109,28 @@ def merge_gin_with_lookup(
     merged["ActivityName"] = merged["ActivityName"].fillna("")
     merged["ParentWBS"] = merged["ParentWBS"].fillna("")
 
-    # Reorder columns: original GIN columns first, then ActivityCode, ParentWBS, ActivityName at the end
+    # Reorder columns: original GIN columns first, then ActivityCode, ParentWBS, ActivityName, then GST columns at the end
     cols = list(merged.columns)
     print(f"Before reordering, columns: {cols}")
-    
+
     # Remove the columns we want to move to the end
+    gst_columns = []
     if "ActivityCode" in cols:
         cols.remove("ActivityCode")
     if "ParentWBS" in cols:
         cols.remove("ParentWBS")
     if "ActivityName" in cols:
         cols.remove("ActivityName")
-    
-    # Add the mapped columns at the end
-    cols = cols + ["ActivityCode", "ParentWBS", "ActivityName"]
+
+    # Check for GST columns and remove them from the main list
+    gst_col_names = ["GST Slab", "GST Amount", "Total ISSUE Amount with GST"]
+    for gst_col in gst_col_names:
+        if gst_col in cols:
+            cols.remove(gst_col)
+            gst_columns.append(gst_col)
+
+    # Add the mapped columns at the end, then GST columns
+    cols = cols + ["ActivityCode", "ParentWBS", "ActivityName"] + gst_columns
     print(f"After reordering, columns: {cols}")
     merged = merged[cols]
     return merged
