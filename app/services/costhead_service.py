@@ -179,6 +179,9 @@ def _field_for(where_text: str) -> str:
     if "wbs" in w:                      return "ParentWBS"
     if "sub" in w:                      return "SubProject"
     if "project" in w:                  return "Project"
+    if "itemgroup" in w or "item group" in w: return "ItemGroup"
+    if "itemdesc" in w or "item desc" in w: return "ItemDesc"
+    if "remarks" in w:                   return "Remarks"
     return "ActivityName"
 
 # ---------- SubProject Filter ----------
@@ -490,12 +493,33 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         (matched_final["CostHead"] == "Other") &
         ((matched_final["ActivityName"].fillna("") == "") | (matched_final["ParentWBS"].fillna("") == ""))
     )
-    summary = (
-        matched_final[~amenities_mask_summary]
-        .groupby("CostHead", as_index=False)["Amount"]
-        .sum().rename(columns={"Amount":"Material TotalAmount"})
-        .sort_values("CostHead")
-    )
+    # Check if GST columns exist in the data
+    has_gst_data = "GST Amount" in matched_final.columns and "GST Slab" in matched_final.columns
+
+    if has_gst_data:
+        # Include GST data in summary aggregation
+        summary = (
+            matched_final[~amenities_mask_summary]
+            .groupby("CostHead", as_index=False)
+            .agg({
+                "Amount": "sum",
+                "GST Amount": "sum"
+            })
+            .rename(columns={"Amount": "Material TotalAmount"})
+            .sort_values("CostHead")
+        )
+        # Calculate total with GST
+        summary["Total Material Amount with GST"] = summary["Material TotalAmount"] + summary["GST Amount"]
+    else:
+        # Fallback to original behavior if no GST data
+        summary = (
+            matched_final[~amenities_mask_summary]
+            .groupby("CostHead", as_index=False)["Amount"]
+            .sum().rename(columns={"Amount":"Material TotalAmount"})
+            .sort_values("CostHead")
+        )
+        summary["GST Amount"] = 0.0
+        summary["Total Material Amount with GST"] = summary["Material TotalAmount"]
 
     # Build ITEM column: aggregated unique tokens "ItemGroup | ItemDesc" per CostHead
     def _token(row):
@@ -505,21 +529,59 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             return f"{ig} | {idc}"
         return idc or ig or "(blank)"
 
+    def _token_with_gst(row):
+        """Create token with GST information if available"""
+        base_token = _token(row)
+        if has_gst_data and "GST Slab" in row and pd.notna(row.get("GST Slab")):
+            gst_slab = str(row.get("GST Slab", "")).strip()
+            if gst_slab and gst_slab != "0%":
+                return f"{base_token} - {gst_slab}"
+        return base_token
+
+    def _gst_item_token(row):
+        """Create GST item token with only item description and GST percentage"""
+        if has_gst_data and "GST Slab" in row and pd.notna(row.get("GST Slab")):
+            gst_slab = str(row.get("GST Slab", "")).strip()
+            if gst_slab and gst_slab != "0%":
+                # Get just the item description without group
+                idc = str(row.get("ItemDesc", "") or "").strip()
+                if idc:
+                    return f"- {idc} - {gst_slab}"
+        return ""
+
     item_text: Dict[str, str] = {}
+    gst_items_text: Dict[str, str] = {}
     allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
+
+    # Process all cost heads for GST items, but only special heads for ITEM Remark
     for head in summary["CostHead"].tolist():
-        if head not in allowed_item_heads:
-            continue
         subset = matched_final[matched_final["CostHead"] == head]
-        uniq = sorted(set(_token(r) for _, r in subset.iterrows()))
-        MAX_ITEMS = 200
-        if len(uniq) > MAX_ITEMS:
-            shown = uniq[:MAX_ITEMS]
-            more = len(uniq) - MAX_ITEMS
-            item_text[head] = "; ".join(shown) + f"; ... (+{more} more)"
+
+        # Process ITEM Remark only for special heads (without GST info)
+        if head in allowed_item_heads:
+            uniq = sorted(set(_token(r) for _, r in subset.iterrows()))
+
+            MAX_ITEMS = 200
+            if len(uniq) > MAX_ITEMS:
+                shown = uniq[:MAX_ITEMS]
+                more = len(uniq) - MAX_ITEMS
+                item_text[head] = "; ".join(shown) + f"; ... (+{more} more)"
+            else:
+                item_text[head] = "; ".join(uniq)
+
+        # Process GST items for ALL cost heads
+        if has_gst_data:
+            gst_items = [item for item in [_gst_item_token(r) for _, r in subset.iterrows()] if item]
+            gst_items_uniq = sorted(set(gst_items))
+            if gst_items_uniq:
+                gst_items_text[head] = "\n".join(gst_items_uniq)
+            else:
+                gst_items_text[head] = ""
         else:
-            item_text[head] = "; ".join(uniq)
+            gst_items_text[head] = ""
+
     summary["ITEM Remark"] = summary["CostHead"].map(item_text).fillna("")
+    summary["GST Items"] = summary["CostHead"].map(gst_items_text).fillna("")
 
     # Build Indoor Amenities breakdown into ITEM cell as bullet list of SubProject totals
     indoor_item_excel_row = None
@@ -598,14 +660,24 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     if not summary.empty:
         summary["CostHead"] = summary["CostHead"].map(_merge_and_canonicalize_costhead)
         if "Material TotalAmount" in summary.columns:
-            agg = summary.groupby("CostHead", as_index=False).agg({
+            agg_columns = {
                 "Material TotalAmount": "sum",
                 "ITEM Remark": lambda s: "; ".join([x for x in s if str(x).strip()])
-            })
+            }
+            if "GST Amount" in summary.columns:
+                agg_columns["GST Amount"] = "sum"
+            if "Total Material Amount with GST" in summary.columns:
+                agg_columns["Total Material Amount with GST"] = "sum"
+            if "GST Items" in summary.columns:
+                agg_columns["GST Items"] = lambda s: "\n".join([x for x in s if str(x).strip()])
+            agg = summary.groupby("CostHead", as_index=False).agg(agg_columns)
         else:
-            agg = summary.groupby("CostHead", as_index=False).agg({
+            agg_columns = {
                 "ITEM Remark": lambda s: "; ".join([x for x in s if str(x).strip()])
-            })
+            }
+            if "GST Items" in summary.columns:
+                agg_columns["GST Items"] = lambda s: "\n".join([x for x in s if str(x).strip()])
+            agg = summary.groupby("CostHead", as_index=False).agg(agg_columns)
         summary = agg
 
     # Pad missing heads and enforce order
@@ -613,7 +685,13 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     summary = order_df.merge(summary, on="CostHead", how="left")
     if "Material TotalAmount" in summary.columns:
         summary["Material TotalAmount"] = summary["Material TotalAmount"].fillna("")
+    if "GST Amount" in summary.columns:
+        summary["GST Amount"] = summary["GST Amount"].fillna(0.0)
+    if "Total Material Amount with GST" in summary.columns:
+        summary["Total Material Amount with GST"] = summary["Total Material Amount with GST"].fillna("")
     summary["ITEM Remark"] = summary["ITEM Remark"].fillna("")
+    if "GST Items" in summary.columns:
+        summary["GST Items"] = summary["GST Items"].fillna("")
 
     # After reordering/padding, compute the Indoor Amenities Excel row index at write-time
     indoor_item_excel_row = None
@@ -650,7 +728,8 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     amenities_mask = (other_before["ActivityName"].fillna("") == "") | (other_before["ParentWBS"].fillna("") == "")
     amenities_rows = other_before[amenities_mask].copy()
-    amenities_rows["Amenity"] = amenities_rows["SubProject"].apply(_fmt_amenity_name)
+    # Add Amenity column
+    amenities_rows = amenities_rows.assign(Amenity=amenities_rows["SubProject"].apply(_fmt_amenity_name))
 
     def _token(row):
         ig = str(row.get("ItemGroup", "") or "").strip()
@@ -659,17 +738,50 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             return f"{ig} | {idc}"
         return idc or ig or "(blank)"
 
-    amenities_items = (
-        amenities_rows.groupby("Amenity")
-        .apply(lambda g: "; ".join(sorted(set(_token(r) for _, r in g.iterrows()))))
-        .reset_index(name="ITEM Remark")
-    )
-    amenities_summary = (
-        amenities_rows.groupby("Amenity", as_index=False)["Amount"]
-        .sum().rename(columns={"Amount":"Material TotalAmount"})
-        .merge(amenities_items, on="Amenity", how="left")
-        .sort_values("Amenity")
-    )
+    amenities_items = []
+    amenities_gst_items = []
+    if not amenities_rows.empty:
+        for amenity, group in amenities_rows.groupby("Amenity"):
+            items = "; ".join(sorted(set(_token(r) for _, r in group.iterrows())))
+            amenities_items.append({"Amenity": amenity, "ITEM Remark": items})
+
+            # Create GST items for amenities
+            if has_gst_data:
+                gst_items = [item for item in [_gst_item_token(r) for _, r in group.iterrows()] if item]
+                gst_items_uniq = sorted(set(gst_items))
+                amenities_gst_items.append({"Amenity": amenity, "GST Items": "\n".join(gst_items_uniq) if gst_items_uniq else ""})
+            else:
+                amenities_gst_items.append({"Amenity": amenity, "GST Items": ""})
+    amenities_items = pd.DataFrame(amenities_items)
+    amenities_gst_items_df = pd.DataFrame(amenities_gst_items)
+    if not amenities_rows.empty:
+        if has_gst_data and "GST Amount" in amenities_rows.columns:
+            amenities_summary = (
+                amenities_rows.groupby("Amenity", as_index=False)
+                .agg({
+                    "Amount": "sum",
+                    "GST Amount": "sum"
+                })
+                .rename(columns={"Amount": "Material TotalAmount"})
+            )
+            if not amenities_items.empty:
+                amenities_summary = amenities_summary.merge(amenities_items, on="Amenity", how="left")
+            if not amenities_gst_items_df.empty:
+                amenities_summary = amenities_summary.merge(amenities_gst_items_df, on="Amenity", how="left")
+            amenities_summary["Total Material Amount with GST"] = amenities_summary["Material TotalAmount"] + amenities_summary["GST Amount"]
+        else:
+            amenities_summary = (
+                amenities_rows.groupby("Amenity", as_index=False)["Amount"]
+                .sum().rename(columns={"Amount":"Material TotalAmount"})
+            )
+            if not amenities_items.empty:
+                amenities_summary = amenities_summary.merge(amenities_items, on="Amenity", how="left")
+            if not amenities_gst_items_df.empty:
+                amenities_summary = amenities_summary.merge(amenities_gst_items_df, on="Amenity", how="left")
+            amenities_summary["GST Amount"] = 0.0
+            amenities_summary["Total Material Amount with GST"] = amenities_summary["Material TotalAmount"]
+    else:
+        amenities_summary = pd.DataFrame(columns=["Amenity", "Material TotalAmount", "GST Amount", "Total Material Amount with GST", "ITEM Remark", "GST Items"])
 
     # Include amenities also in unmatched views
     # IMPORTANT: Build unmatched sheets from FINAL allocation so anything
@@ -688,12 +800,15 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # Append amenities summary at end of CostHead_Summary
     amenities_as_costhead = amenities_summary.rename(columns={"Amenity":"CostHead"})[
-        ["CostHead","Material TotalAmount","ITEM Remark"]
+        ["CostHead","Material TotalAmount","GST Amount","Total Material Amount with GST","ITEM Remark","GST Items"]
     ]
     amenities_header = pd.DataFrame({
         "CostHead": ["Extra Remaining -Unmatched"],
         "Material TotalAmount": [""],
-        "ITEM Remark": [""]
+        "GST Amount": [""],
+        "Total Material Amount with GST": [""],
+        "ITEM Remark": [""],
+        "GST Items": [""]
     })
     # Track the position (Excel row) of the amenities header for formatting
     summary_base_len = len(summary)
@@ -727,24 +842,53 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     if not excluded_unmatched.empty:
         # Group by SubProject and aggregate amounts and items
-        ex_items = (
-            excluded_unmatched.groupby("SubProject")
-            .apply(lambda g: "; ".join(sorted(set(_token(r) for _, r in g.iterrows()))))
-            .reset_index(name="ITEM Remark")
-        )
-        ex_summary = (
-            excluded_unmatched.groupby("SubProject", as_index=False)["Amount"]
-            .sum().rename(columns={"Amount":"Material TotalAmount"})
-            .sort_values("SubProject")
-        )
+        ex_items = []
+        ex_gst_items = []
+        for subproject, group in excluded_unmatched.groupby("SubProject"):
+            items = "; ".join(sorted(set(_token(r) for _, r in group.iterrows())))
+            ex_items.append({"SubProject": subproject, "ITEM Remark": items})
+
+            # Create GST items for excluded unmatched
+            if has_gst_data:
+                gst_items = [item for item in [_gst_item_token(r) for _, r in group.iterrows()] if item]
+                gst_items_uniq = sorted(set(gst_items))
+                ex_gst_items.append({"SubProject": subproject, "GST Items": "\n".join(gst_items_uniq) if gst_items_uniq else ""})
+            else:
+                ex_gst_items.append({"SubProject": subproject, "GST Items": ""})
+        ex_items = pd.DataFrame(ex_items)
+        ex_gst_items_df = pd.DataFrame(ex_gst_items)
+        if has_gst_data and "GST Amount" in excluded_unmatched.columns:
+            ex_summary = (
+                excluded_unmatched.groupby("SubProject", as_index=False)
+                .agg({
+                    "Amount": "sum",
+                    "GST Amount": "sum"
+                })
+                .rename(columns={"Amount": "Material TotalAmount"})
+                .sort_values("SubProject")
+            )
+            ex_summary["Total Material Amount with GST"] = ex_summary["Material TotalAmount"] + ex_summary["GST Amount"]
+        else:
+            ex_summary = (
+                excluded_unmatched.groupby("SubProject", as_index=False)["Amount"]
+                .sum().rename(columns={"Amount":"Material TotalAmount"})
+                .sort_values("SubProject")
+            )
+            ex_summary["GST Amount"] = 0.0
+            ex_summary["Total Material Amount with GST"] = ex_summary["Material TotalAmount"]
         ex_summary = ex_summary.merge(ex_items, on="SubProject", how="left")
+        if not ex_gst_items_df.empty:
+            ex_summary = ex_summary.merge(ex_gst_items_df, on="SubProject", how="left")
         unmatched_items_as_costhead = ex_summary.rename(columns={"SubProject":"CostHead"})[
-            ["CostHead","Material TotalAmount","ITEM Remark"]
+            ["CostHead","Material TotalAmount","GST Amount","Total Material Amount with GST","ITEM Remark","GST Items"]
         ]
         unmatched_items_header = pd.DataFrame({
             "CostHead": ["Unmatched Item Group & Items"],
             "Material TotalAmount": [""],
-            "ITEM Remark": [""]
+            "GST Amount": [""],
+            "Total Material Amount with GST": [""],
+            "ITEM Remark": [""],
+            "GST Items": [""]
         })
         # Append after amenities block
         unmatched_base_len = len(summary)
