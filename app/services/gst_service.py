@@ -38,7 +38,8 @@ def load_gst_sheet(filepath: Union[str, object]) -> pd.DataFrame:
         # Clean and normalize the data
         result_df = pd.DataFrame({
             "ItemDesc": gst_df[gst_mapping["item_desc"]].fillna("").astype(str).str.strip(),
-            "TaxSlab": pd.to_numeric(gst_df[gst_mapping["tax_slab"]], errors="coerce").fillna(0.0)
+            # Keep raw values so we can correctly parse formats like "18%" or 0.18 later
+            "TaxSlab": gst_df[gst_mapping["tax_slab"]].fillna("").astype(str).str.strip(),
         })
 
         # Remove rows with empty item descriptions
@@ -101,6 +102,18 @@ def auto_detect_gst_columns(df: pd.DataFrame) -> Dict[str, str]:
     return result
 
 
+def _normalize_item_desc(value: str) -> str:
+    if value is None:
+        return ""
+    s = str(value)
+    s = s.replace("\u00a0", " ")
+    s = s.replace("–", "-").replace("—", "-")
+    s = s.replace("/", " ")
+    s = s.replace("-", " ")
+    s = re.sub(r"\s+", " ", s)
+    return s.strip().upper()
+
+
 def create_gst_lookup(gst_df: pd.DataFrame) -> Dict[str, float]:
     """
     Create GST lookup dictionary from GST DataFrame
@@ -117,17 +130,20 @@ def create_gst_lookup(gst_df: pd.DataFrame) -> Dict[str, float]:
     # Create lookup dictionary
     gst_lookup = {}
     for _, row in gst_df.iterrows():
-        item_desc = str(row["ItemDesc"]).strip().upper()
+        item_desc = _normalize_item_desc(row["ItemDesc"])
         tax_slab_raw = str(row["TaxSlab"]).strip()
 
         # Handle percentage values like "18%" or "18"
-        if tax_slab_raw.endswith('%'):
-            tax_slab = float(tax_slab_raw[:-1])  # Remove % and convert to float
-        else:
-            # If it's already a decimal like 0.18, convert to percentage
-            tax_slab = float(tax_slab_raw)
-            if tax_slab < 1:  # If less than 1, it's a decimal percentage
-                tax_slab = tax_slab * 100  # Convert 0.18 to 18
+        try:
+            if tax_slab_raw.endswith('%'):
+                tax_slab = float(tax_slab_raw[:-1])  # Remove % and convert to float
+            else:
+                # If it's already a decimal like 0.18, convert to percentage
+                tax_slab = float(tax_slab_raw)
+                if tax_slab < 1:  # If less than 1, it's a decimal percentage
+                    tax_slab = tax_slab * 100  # Convert 0.18 to 18
+        except ValueError:
+            tax_slab = 0.0
 
         if item_desc:
             gst_lookup[item_desc] = tax_slab
@@ -150,9 +166,7 @@ def match_gst_slab(item_desc: str, gst_lookup: Dict[str, float]) -> float:
         return 0.0
 
     # Clean and normalize the item description
-    item_desc_clean = str(item_desc).strip().upper()
-    # Remove extra spaces and normalize
-    item_desc_clean = ' '.join(item_desc_clean.split())
+    item_desc_clean = _normalize_item_desc(item_desc)
 
     # Try exact match first (fastest)
     if item_desc_clean in gst_lookup:
