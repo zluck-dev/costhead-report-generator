@@ -493,9 +493,9 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         (matched_final["CostHead"] == "Other") &
         ((matched_final["ActivityName"].fillna("") == "") | (matched_final["ParentWBS"].fillna("") == ""))
     )
-    # Check if GST columns exist in the data and have actual GST data
-    has_gst_data = ("GST Amount" in matched_final.columns and "GST Slab" in matched_final.columns and
-                   matched_final["GST Amount"].fillna(0).sum() > 0)
+    # Treat GST mode as active whenever GST columns exist in GIN mapped data.
+    # This allows GST detail text even when GST amounts are 0 for some/all rows.
+    has_gst_data = ("GST Amount" in matched_final.columns and "GST Slab" in matched_final.columns)
 
     if has_gst_data:
         # Include GST data in summary aggregation
@@ -587,6 +587,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     # Build Indoor Amenities breakdown into ITEM cell as bullet list of SubProject totals
     indoor_item_excel_row = None
+    indoor_gst_amount_text = ""
     try:
         indoor_mask_data = matched_final["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
         if indoor_mask_data.any():
@@ -607,6 +608,28 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             mask_summary = summary["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
             if mask_summary.any():
                 summary.loc[mask_summary, "ITEM Remark"] = text
+
+            # Prepare indoor GST Amount cell text with same item list format,
+            # but values as GST-only and final GST total at the end.
+            if has_gst_data and "GST Amount" in matched_final.columns:
+                gst_sp_totals = (
+                    matched_final[indoor_mask_data]
+                    .assign(
+                        __GST__=pd.to_numeric(matched_final[indoor_mask_data]["GST Amount"], errors="coerce").fillna(0.0),
+                    )
+                    .groupby("SubProject", as_index=False)["__GST__"]
+                    .sum()
+                    .sort_values("SubProject")
+                )
+                gst_lines = []
+                for _, r in gst_sp_totals.iterrows():
+                    sp = str(r["SubProject"]).strip()
+                    amt = float(r["__GST__"]) if pd.notnull(r["__GST__"]) else 0.0
+                    if sp:
+                        gst_lines.append(f"- {sp} - {amt:,.2f} Rs.")
+                gst_total = gst_sp_totals["__GST__"].sum() if not gst_sp_totals.empty else 0.0
+                gst_lines.append(f"Total - {gst_total:,.2f} Rs.")
+                indoor_gst_amount_text = "\n".join(gst_lines)
     except Exception:
         pass
 
@@ -920,6 +943,24 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         unmatched_base_len = len(summary)
         summary = pd.concat([summary, unmatched_items_header, unmatched_items_as_costhead], ignore_index=True)
 
+    # Append grand total row at the end of CostHead_Summary
+    total_columns = ["Material TotalAmount", "GST Amount", "Total Material Amount with GST"]
+    total_row = {"CostHead": "Total Cost"}
+    for col in total_columns:
+        if col in summary.columns:
+            total_row[col] = pd.to_numeric(summary[col], errors="coerce").fillna(0.0).sum()
+    if "ITEM Remark" in summary.columns:
+        total_row["ITEM Remark"] = ""
+    if "GST Items" in summary.columns:
+        total_row["GST Items"] = ""
+    summary = pd.concat([summary, pd.DataFrame([total_row])], ignore_index=True)
+
+    # Write indoor detailed GST text after totals are computed, so grand totals remain numeric.
+    if has_gst_data and indoor_gst_amount_text and "GST Amount" in summary.columns:
+        indoor_mask_summary = summary["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
+        if indoor_mask_summary.any():
+            summary.loc[indoor_mask_summary, "GST Amount"] = indoor_gst_amount_text
+
     # 4) Create output directory and write reports
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -962,6 +1003,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
                 item_col_idx = summary.columns.get_loc("ITEM Remark") + 1
                 cell = ws.cell(row=indoor_item_excel_row, column=item_col_idx)
                 cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
+                if "GST Amount" in summary.columns:
+                    gst_col_idx = summary.columns.get_loc("GST Amount") + 1
+                    gst_cell = ws.cell(row=indoor_item_excel_row, column=gst_col_idx)
+                    gst_cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
         except Exception:
             pass
 
