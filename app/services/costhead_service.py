@@ -102,6 +102,20 @@ MASONRY_KEYWORDS_DESC = [
 MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC",
                           "REBAR CHEMICAL","NON ISI PLUMBING","REGULAR HARDWARE"]
 
+# Keywords for RAILING, GRILL classification
+RAILING_GRILL_KEYWORDS_DESC = [
+
+]
+RAILING_GRILL_KEYWORDS_GROUP = [
+    "BALCONY RAILING",
+]
+RAILING_GRILL_EXCLUDE_DESC: List[str] = [
+    # Add desc-level exclusions here if needed, e.g. "DOOR FRAME"
+]
+RAILING_GRILL_EXCLUDE_GROUP: List[str] = [
+    # Add group-level exclusions here if needed
+]
+
 # ---------- Helpers ----------
 def _clean_name(s: str) -> str:
     if s is None: return ""
@@ -272,6 +286,16 @@ def _classify_special_head(row: Dict) -> str:
             if _contains_exact_keyword(hay_group, [kw]) and not (_contains_exact_keyword(hay_desc, CONCRETE_EXCLUDE_DESC) or _contains_exact_keyword(hay_group, CONCRETE_EXCLUDE_GROUP)):
                 return "Concrete"
 
+    # RAILING, GRILL — applies to ALL SubProjects (no sp_allowed restriction)
+    railing_hit = (
+        _contains_exact_keyword(hay_desc, RAILING_GRILL_KEYWORDS_DESC) or
+        _contains_exact_keyword(hay_group, RAILING_GRILL_KEYWORDS_GROUP)
+    )
+    if railing_hit:
+        if not (_contains_exact_keyword(hay_desc, RAILING_GRILL_EXCLUDE_DESC) or
+                _contains_exact_keyword(hay_group, RAILING_GRILL_EXCLUDE_GROUP)):
+            return "RAILING, GRILL"
+
     return "Other"
 
 # ---------- Canonicalize CostHead labels ----------
@@ -284,6 +308,9 @@ def _canonicalize_costhead(value: str) -> str:
         return "Concrete"
     if key in {"masonry and plaster material only", "masonry plaster material only", "masonry and plaster"}:
         return "Masonry and plaster material only"
+    railing_keys = {"railing grill", "railing, grill", "railing grill", "ms railing grill"}
+    if key in railing_keys or "railing" in key and "grill" in key:
+        return "RAILING, GRILL"
     return s
 
 # ---------- Logging Utils ----------
@@ -337,7 +364,7 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
 
     # FIRST: Apply special heads (Steel, Concrete, Masonry) based on keywords
     specials = tagged.apply(_classify_special_head, axis=1)
-    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only"])
+    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only","RAILING, GRILL"])
     tagged.loc[special_mask, "CostHead"] = specials[special_mask]
     assigned_mask = assigned_mask | special_mask
 
@@ -562,7 +589,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     item_text: Dict[str, str] = {}
     gst_items_text: Dict[str, str] = {}
-    allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
+    allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only", "RAILING, GRILL"}
 
     # Process all cost heads for GST items, but only special heads for ITEM Remark
     for head in summary["CostHead"].tolist():
