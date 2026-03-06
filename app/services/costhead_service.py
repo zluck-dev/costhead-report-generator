@@ -341,16 +341,19 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     tagged.loc[special_mask, "CostHead"] = specials[special_mask]
     assigned_mask = assigned_mask | special_mask
 
-    # SECOND: Apply mapping rules only to remaining unassigned rows
+    # SECOND: Build expanded mapping rules (skipping special heads)
     expanded = []
     special_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
+    # Priority field order: ActivityName matches are applied before broader fields
+    # so that specific role-based keywords (e.g. "LIFT") are not accidentally
+    # captured by a rule that matches on ParentWBS for a different cost head.
+    HIGH_PRIORITY_FIELDS = {"ActivityName"}
+
     for _, r in mapping.iterrows():
         head_raw = r["CostHead"]
         head_can = _canonicalize_costhead(head_raw)
-        # Skip any mapping rule that tries to set a special head; those are keyword-only
         if head_can in special_heads:
             continue
-        # Support multi-field FromWhere like "ParentWBS, ActivityName"
         fields_raw = str(r["FromWhere"] or "")
         fields = [f.strip() for f in re.split(r"[;,]", fields_raw) if f.strip()]
         if not fields:
@@ -359,29 +362,38 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
             if head_raw and kw:
                 for f in fields:
                     field = _field_for(f)
-                    expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw})
+                    priority = 1 if field in HIGH_PRIORITY_FIELDS else 2
+                    expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw, "Priority": priority})
     map_expanded = pd.DataFrame(expanded)
 
-    # Apply mapping rules only to unassigned rows
+    # Apply mapping in two passes:
+    #   Pass 1 – ActivityName rules only  (priority 1)
+    #   Pass 2 – all other field rules    (priority 2)
+    # This ensures a row whose ActivityName matches "LIFT" is assigned to the
+    # "Lift" cost head before a ParentWBS rule for "STAIR..." can claim it.
     assigned_by_mapping = 0
     if not map_expanded.empty:
-        for _, mr in map_expanded.iterrows():
-            field = mr["Field"]; kw = mr["Keyword"]; hay = tagged[field]
-            if match_mode == "exact":
-                mask = (hay == kw)
-            else:
-                try:
-                    mask = hay.str.contains(re.escape(kw), na=False)
-                except Exception:
-                    mask = hay.fillna("").astype(str).str.contains(kw, na=False)
-            to_assign = mask & (~assigned_mask)
-            if to_assign.any():
-                tagged.loc[to_assign, "CostHead"] = mr["CostHead"]
-                assigned_mask = assigned_mask | to_assign
-                assigned_now = int(to_assign.sum())
-                assigned_by_mapping += assigned_now
+        for pass_priority in (1, 2):
+            pass_rules = map_expanded[map_expanded["Priority"] == pass_priority]
+            for _, mr in pass_rules.iterrows():
+                field = mr["Field"]; kw = mr["Keyword"]; hay = tagged[field]
+                if match_mode == "exact":
+                    mask = (hay == kw)
+                else:
+                    try:
+                        mask = hay.str.contains(re.escape(kw), na=False)
+                    except Exception:
+                        mask = hay.fillna("").astype(str).str.contains(kw, na=False)
+                to_assign = mask & (~assigned_mask)
+                if to_assign.any():
+                    tagged.loc[to_assign, "CostHead"] = mr["CostHead"]
+                    assigned_mask = assigned_mask | to_assign
+                    assigned_by_mapping += int(to_assign.sum())
 
-    # Return after applying specials first, then mapping
+    # Drop the Priority helper column before returning so callers aren't affected
+    if "Priority" in map_expanded.columns:
+        map_expanded = map_expanded.drop(columns=["Priority"])
+
     return tagged, map_expanded
 
 # ---------- Reallocate unmatched by SubProject ----------
@@ -588,6 +600,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # Build Indoor Amenities breakdown into ITEM cell as bullet list of SubProject totals
     indoor_item_excel_row = None
     indoor_gst_amount_text = ""
+    indoor_total_with_gst_text = ""
     try:
         indoor_mask_data = matched_final["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
         if indoor_mask_data.any():
@@ -596,7 +609,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
                 .groupby("SubProject", as_index=False)["Amount"].sum()
                 .sort_values("SubProject")
             )
-            # Clean names and build bullet lines
+            # Clean names and build bullet lines for ITEM Remark
             lines = []
             for _, r in sp_totals.iterrows():
                 sp = str(r["SubProject"]).strip()
@@ -609,17 +622,16 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             if mask_summary.any():
                 summary.loc[mask_summary, "ITEM Remark"] = text
 
-            # Prepare indoor GST Amount cell text with same item list format,
-            # but values as GST-only and final GST total at the end.
             if has_gst_data and "GST Amount" in matched_final.columns:
+                indoor_indoor = matched_final[indoor_mask_data].copy()
+                indoor_indoor["__GST__"] = pd.to_numeric(indoor_indoor["GST Amount"], errors="coerce").fillna(0.0)
+                indoor_indoor["__AMT__"] = pd.to_numeric(indoor_indoor["Amount"], errors="coerce").fillna(0.0)
+                indoor_indoor["__TOTAL__"] = indoor_indoor["__AMT__"] + indoor_indoor["__GST__"]
+
+                # GST Amount breakdown per SubProject
                 gst_sp_totals = (
-                    matched_final[indoor_mask_data]
-                    .assign(
-                        __GST__=pd.to_numeric(matched_final[indoor_mask_data]["GST Amount"], errors="coerce").fillna(0.0),
-                    )
-                    .groupby("SubProject", as_index=False)["__GST__"]
-                    .sum()
-                    .sort_values("SubProject")
+                    indoor_indoor.groupby("SubProject", as_index=False)["__GST__"]
+                    .sum().sort_values("SubProject")
                 )
                 gst_lines = []
                 for _, r in gst_sp_totals.iterrows():
@@ -630,6 +642,21 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
                 gst_total = gst_sp_totals["__GST__"].sum() if not gst_sp_totals.empty else 0.0
                 gst_lines.append(f"Total - {gst_total:,.2f} Rs.")
                 indoor_gst_amount_text = "\n".join(gst_lines)
+
+                # Total Material Amount with GST breakdown per SubProject
+                total_sp_totals = (
+                    indoor_indoor.groupby("SubProject", as_index=False)["__TOTAL__"]
+                    .sum().sort_values("SubProject")
+                )
+                total_lines = []
+                for _, r in total_sp_totals.iterrows():
+                    sp = str(r["SubProject"]).strip()
+                    amt = float(r["__TOTAL__"]) if pd.notnull(r["__TOTAL__"]) else 0.0
+                    if sp:
+                        total_lines.append(f"- {sp} - {amt:,.2f} Rs.")
+                total_grand = total_sp_totals["__TOTAL__"].sum() if not total_sp_totals.empty else 0.0
+                total_lines.append(f"Total - {total_grand:,.2f} Rs.")
+                indoor_total_with_gst_text = "\n".join(total_lines)
     except Exception:
         pass
 
@@ -955,11 +982,14 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         total_row["GST Items"] = ""
     summary = pd.concat([summary, pd.DataFrame([total_row])], ignore_index=True)
 
-    # Write indoor detailed GST text after totals are computed, so grand totals remain numeric.
-    if has_gst_data and indoor_gst_amount_text and "GST Amount" in summary.columns:
+    # Write indoor detailed text after totals are computed, so grand totals remain numeric.
+    if has_gst_data:
         indoor_mask_summary = summary["CostHead"].astype(str).str.strip().str.lower() == "indoor amenities"
         if indoor_mask_summary.any():
-            summary.loc[indoor_mask_summary, "GST Amount"] = indoor_gst_amount_text
+            if indoor_gst_amount_text and "GST Amount" in summary.columns:
+                summary.loc[indoor_mask_summary, "GST Amount"] = indoor_gst_amount_text
+            if indoor_total_with_gst_text and "Total Material Amount with GST" in summary.columns:
+                summary.loc[indoor_mask_summary, "Total Material Amount with GST"] = indoor_total_with_gst_text
 
     # 4) Create output directory and write reports
     output_path = Path(output_dir)
@@ -1007,6 +1037,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
                     gst_col_idx = summary.columns.get_loc("GST Amount") + 1
                     gst_cell = ws.cell(row=indoor_item_excel_row, column=gst_col_idx)
                     gst_cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
+                if "Total Material Amount with GST" in summary.columns:
+                    total_col_idx = summary.columns.get_loc("Total Material Amount with GST") + 1
+                    total_cell = ws.cell(row=indoor_item_excel_row, column=total_col_idx)
+                    total_cell.alignment = Alignment(wrap_text=True, horizontal="left", vertical="top")
         except Exception:
             pass
 
