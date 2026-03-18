@@ -116,6 +116,20 @@ RAILING_GRILL_EXCLUDE_GROUP: List[str] = [
     # Add group-level exclusions here if needed
 ]
 
+# Keywords for Louvers classification
+LOUVERS_KEYWORDS_DESC = [
+
+]
+LOUVERS_KEYWORDS_GROUP = [
+    "ALUMINIUM LOUVERS"
+]
+LOUVERS_EXCLUDE_DESC: List[str] = [
+
+]
+LOUVERS_EXCLUDE_GROUP: List[str] = [
+
+]
+
 # ---------- Helpers ----------
 def _clean_name(s: str) -> str:
     if s is None: return ""
@@ -296,6 +310,16 @@ def _classify_special_head(row: Dict) -> str:
                 _contains_exact_keyword(hay_group, RAILING_GRILL_EXCLUDE_GROUP)):
             return "RAILING, GRILL"
 
+    # Louvers — applies to ALL SubProjects (no sp_allowed restriction)
+    louvers_hit = (
+        _contains_exact_keyword(hay_desc, LOUVERS_KEYWORDS_DESC) or
+        _contains_exact_keyword(hay_group, LOUVERS_KEYWORDS_GROUP)
+    )
+    if louvers_hit:
+        if not (_contains_exact_keyword(hay_desc, LOUVERS_EXCLUDE_DESC) or
+                _contains_exact_keyword(hay_group, LOUVERS_EXCLUDE_GROUP)):
+            return "Louvers"
+
     return "Other"
 
 # ---------- Canonicalize CostHead labels ----------
@@ -311,6 +335,8 @@ def _canonicalize_costhead(value: str) -> str:
     railing_keys = {"railing grill", "railing, grill", "railing grill", "ms railing grill"}
     if key in railing_keys or "railing" in key and "grill" in key:
         return "RAILING, GRILL"
+    if key == "louvers":
+        return "Louvers"
     return s
 
 # ---------- Logging Utils ----------
@@ -364,7 +390,7 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
 
     # FIRST: Apply special heads (Steel, Concrete, Masonry) based on keywords
     specials = tagged.apply(_classify_special_head, axis=1)
-    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only","RAILING, GRILL"])
+    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only","RAILING, GRILL", "Louvers"])
     tagged.loc[special_mask, "CostHead"] = specials[special_mask]
     assigned_mask = assigned_mask | special_mask
 
@@ -589,7 +615,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     item_text: Dict[str, str] = {}
     gst_items_text: Dict[str, str] = {}
-    allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only", "RAILING, GRILL"}
+    allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only", "RAILING, GRILL", "Louvers"}
 
     # Process all cost heads for GST items, but only special heads for ITEM Remark
     for head in summary["CostHead"].tolist():
