@@ -390,9 +390,12 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     unit_finish_head = "UNIT FINISH (COST REQUIRE TO FINISH ONE. UNIT (FLAT SHOP OFFICE SERVANT ROOM) . EXCLUDING MASONRY & PLASTER"
     unit_finish_norm = _norm_text(unit_finish_head)
 
-    # Build expanded mapping rules (skipping special heads)
+    # Build expanded mapping rules:
+    # - Keep Steel/Concrete in special-keyword classification only
+    # - Keep Masonry rules separately so they can run before keyword fallback
     expanded = []
-    special_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
+    masonry_expanded = []
+    special_heads = {"Steel", "Concrete"}
     # Priority field order: ActivityName matches are applied before broader fields
     # so that specific role-based keywords (e.g. "LIFT") are not accidentally
     # captured by a rule that matches on ParentWBS for a different cost head.
@@ -401,8 +404,6 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     for _, r in mapping.iterrows():
         head_raw = r["CostHead"]
         head_can = _canonicalize_costhead(head_raw)
-        if head_can in special_heads:
-            continue
         fields_raw = str(r["FromWhere"] or "")
         fields = [f.strip() for f in re.split(r"[;,]", fields_raw) if f.strip()]
         if not fields:
@@ -412,19 +413,34 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
                 for f in fields:
                     field = _field_for(f)
                     priority = 1 if field in HIGH_PRIORITY_FIELDS else 2
-                    head_order = 0 if _norm_text(head_raw) == unit_finish_norm else 1
-                    expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw, "Priority": priority, "HeadOrder": head_order})
+                    if head_can in special_heads:
+                        continue
+                    if head_can == "Masonry and plaster material only":
+                        masonry_expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw, "Priority": priority})
+                    else:
+                        head_order = 0 if _norm_text(head_raw) == unit_finish_norm else 1
+                        expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw, "Priority": priority, "HeadOrder": head_order})
     map_expanded = pd.DataFrame(expanded)
+    masonry_map_expanded = pd.DataFrame(masonry_expanded)
 
-    # Apply mapping with explicit head ordering in stages:
-    #   Stage 1) Unit Finish head first (priority 1 then 2)
-    #   Stage 2) Special heads (Steel/Concrete/Masonry/...) on remaining rows
-    #   Stage 3) All remaining mapping heads (priority 1 then 2)
-    # This ensures Unit Finish gets first claim globally while preserving
-    # ActivityName-before-broader-field behavior within mapping stages.
+    # Apply assignment in explicit stages:
+    #   Stage 1) Special keyword heads (Steel/Concrete)
+    #   Stage 2) Unit Finish mapping (priority 1 then 2)
+    #   Stage 3) Masonry (mapping first, then Masonry keywords)
+    #   Stage 4) RAILING, GRILL + Louvers keywords
+    #   Stage 5) Remaining mappings (priority 1 then 2)
+    # Preserve ActivityName-before-broader-field behavior within mapping stages.
     assigned_by_mapping = 0
+
+    # Stage 1: Apply special keyword heads (Steel/Concrete) first
+    specials = tagged.apply(_classify_special_head, axis=1)
+    special_mask = (~assigned_mask) & specials.isin(["Steel", "Concrete"])
+    if special_mask.any():
+        tagged.loc[special_mask, "CostHead"] = specials[special_mask]
+        assigned_mask = assigned_mask | special_mask
+
     if not map_expanded.empty:
-        # Stage 1: Unit Finish mapping first
+        # Stage 2: Unit Finish mapping
         for pass_priority in (1, 2):
             pass_rules = map_expanded[
                 (map_expanded["HeadOrder"] == 0) &
@@ -445,14 +461,41 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
                     assigned_mask = assigned_mask | to_assign
                     assigned_by_mapping += int(to_assign.sum())
 
-    # Stage 2: Apply special heads to still-unassigned rows
-    specials = tagged.apply(_classify_special_head, axis=1)
-    special_mask = (~assigned_mask) & specials.isin(["Steel", "Concrete", "Masonry and plaster material only", "RAILING, GRILL", "Louvers"])
-    if special_mask.any():
-        tagged.loc[special_mask, "CostHead"] = specials[special_mask]
-        assigned_mask = assigned_mask | special_mask
+    # Stage 3A: Apply Masonry mapping rules to still-unassigned rows
+    if not masonry_map_expanded.empty:
+        for pass_priority in (1, 2):
+            pass_rules = masonry_map_expanded[
+                (masonry_map_expanded["Priority"] == pass_priority)
+            ]
+            for _, mr in pass_rules.iterrows():
+                field = mr["Field"]; kw = mr["Keyword"]; hay = tagged[field]
+                if match_mode == "exact":
+                    mask = (hay == kw)
+                else:
+                    try:
+                        mask = hay.str.contains(re.escape(kw), na=False)
+                    except Exception:
+                        mask = hay.fillna("").astype(str).str.contains(kw, na=False)
+                to_assign = mask & (~assigned_mask)
+                if to_assign.any():
+                    tagged.loc[to_assign, "CostHead"] = mr["CostHead"]
+                    assigned_mask = assigned_mask | to_assign
+                    assigned_by_mapping += int(to_assign.sum())
 
-    # Stage 3: Apply all remaining mapping heads
+    # Stage 3B: Masonry keyword fallback on still-unassigned rows
+    specials = tagged.apply(_classify_special_head, axis=1)
+    masonry_special_mask = (~assigned_mask) & specials.eq("Masonry and plaster material only")
+    if masonry_special_mask.any():
+        tagged.loc[masonry_special_mask, "CostHead"] = specials[masonry_special_mask]
+        assigned_mask = assigned_mask | masonry_special_mask
+
+    # Stage 4: RAILING, GRILL + Louvers keyword fallback on still-unassigned rows
+    railing_louvers_mask = (~assigned_mask) & specials.isin(["RAILING, GRILL", "Louvers"])
+    if railing_louvers_mask.any():
+        tagged.loc[railing_louvers_mask, "CostHead"] = specials[railing_louvers_mask]
+        assigned_mask = assigned_mask | railing_louvers_mask
+
+    # Stage 5: Apply all remaining mapping heads
     if not map_expanded.empty:
         for pass_priority in (1, 2):
             pass_rules = map_expanded[
