@@ -6,6 +6,11 @@ from pathlib import Path
 import zipfile
 import io
 
+# Assets (no user upload needed for these)
+ASSETS_FILES_DIR = Path(__file__).parent / "assets" / "files"
+GST_ASSET_PATH = str(ASSETS_FILES_DIR / "ITEM MASTER GST.xlsx")
+COSTHEAD_RULE_ASSET_PATH = str(ASSETS_FILES_DIR / "Latest CostHead Rule Map-New.xlsx")
+
 # Import your existing services
 from app.services.excel_service import load_excel, detect_numeric_columns
 from app.services.gin_service import list_sheets, load_sheet, auto_detect_columns, build_activity_lookup, merge_gin_with_lookup
@@ -63,16 +68,12 @@ def main():
         st.session_state.activities_df = None
     if 'gin_df' not in st.session_state:
         st.session_state.gin_df = None
-    if 'costhead_file' not in st.session_state:
-        st.session_state.costhead_file = None
-    if 'gst_file' not in st.session_state:
-        st.session_state.gst_file = None
 
     # File upload section in main area
     st.markdown('<div class="section-header">📁 File Upload</div>', unsafe_allow_html=True)
 
     # Create four columns for file uploads
-    upload_col1, upload_col2, upload_col3, upload_col4 = st.columns(4)
+    upload_col1, upload_col2 = st.columns(2)
 
     with upload_col1:
         st.markdown("### 📊 Activities (Master)")
@@ -109,32 +110,6 @@ def main():
                 st.success(f"✅ Loaded {len(gin_df)} rows")
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
-
-    with upload_col3:
-        st.markdown("### 🗂️ CostHead Mapping")
-        costhead_file = st.file_uploader(
-            "Upload CostHead mapping Excel file",
-            type=['xlsx', 'xls'],
-            key=f"costhead_upload_{st.session_state.get('clear_counter', 0)}",
-            help="Upload the CostHead mapping Excel file"
-        )
-
-        if costhead_file is not None:
-            st.session_state.costhead_file = costhead_file
-            st.success("✅ CostHead mapping uploaded")
-
-    with upload_col4:
-        st.markdown("### 💰 GST Sheet (Optional)")
-        gst_file = st.file_uploader(
-            "Upload GST Excel file",
-            type=['xlsx', 'xls'],
-            key=f"gst_upload_{st.session_state.get('clear_counter', 0)}",
-            help="Upload the GST sheet with item descriptions and tax slabs (optional)"
-        )
-
-        if gst_file is not None:
-            st.session_state.gst_file = gst_file
-            st.success("✅ GST sheet uploaded")
 
     st.markdown("<br>", unsafe_allow_html=True)  # Add space
 
@@ -173,9 +148,7 @@ def main():
 
     # Clear button below generate button - only show if files are uploaded
     if (st.session_state.activities_df is not None or
-        st.session_state.gin_df is not None or
-        st.session_state.costhead_file is not None or
-        st.session_state.gst_file is not None):
+        st.session_state.gin_df is not None):
 
         st.markdown("<br>", unsafe_allow_html=True)  # Add some space
         clear_col1, clear_col2, clear_col3 = st.columns([1, 1, 1])
@@ -186,7 +159,7 @@ def main():
     st.markdown("<br>", unsafe_allow_html=True)  # Add some space
 
     # Data preview section
-    if st.session_state.activities_df is not None or st.session_state.gin_df is not None or st.session_state.gst_file is not None:
+    if st.session_state.activities_df is not None or st.session_state.gin_df is not None:
         st.markdown('<div class="section-header">👀 Data Preview</div>', unsafe_allow_html=True)
 
         tab1, tab2, tab3 = st.tabs(["Activities Data", "GIN Data", "GST Data"])
@@ -204,14 +177,11 @@ def main():
                 st.info("Upload a GIN file to see the preview")
 
         with tab3:
-            if st.session_state.gst_file is not None:
-                try:
-                    gst_df = load_sheet(st.session_state.gst_file, list_sheets(st.session_state.gst_file)[0])
-                    st.dataframe(gst_df, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Error loading GST file: {str(e)}")
-            else:
-                st.info("Upload a GST file to see the preview")
+            try:
+                gst_df = load_sheet(GST_ASSET_PATH, list_sheets(GST_ASSET_PATH)[0])
+                st.dataframe(gst_df, use_container_width=True)
+            except Exception as e:
+                st.error(f"Error loading GST asset file: {str(e)}")
 
 def generate_report(match_mode):
     """Generate the CostHead report"""
@@ -223,10 +193,6 @@ def generate_report(match_mode):
 
     if st.session_state.gin_df is None:
         st.error("❌ Please upload the GIN file first")
-        return
-
-    if st.session_state.costhead_file is None:
-        st.error("❌ Please upload the CostHead mapping file first")
         return
 
     try:
@@ -258,11 +224,6 @@ def generate_report(match_mode):
                 activities_lookup
             )
 
-            # Process GST if GST file is provided
-            if st.session_state.gst_file is not None:
-                from app.services.gst_service import process_gst_for_gin_mapped
-                merged_df = process_gst_for_gin_mapped(merged_df, st.session_state.gst_file)
-
             # Create temporary directory for output
             with tempfile.TemporaryDirectory() as temp_dir:
                 # Save GIN_Mapped file
@@ -272,10 +233,10 @@ def generate_report(match_mode):
                 # Generate CostHead report
                 result = generate_costhead_report(
                     gin_mapped_path,
-                    st.session_state.costhead_file,
+                    COSTHEAD_RULE_ASSET_PATH,
                     temp_dir,
                     match_mode,
-                    st.session_state.gst_file
+                    GST_ASSET_PATH
                 )
 
                 # Create a zip file with all outputs
@@ -327,8 +288,6 @@ def clear_data():
     # Clear all session state data
     st.session_state.activities_df = None
     st.session_state.gin_df = None
-    st.session_state.costhead_file = None
-    st.session_state.gst_file = None
 
     # Clear file uploader states by using unique keys
     if 'clear_counter' not in st.session_state:

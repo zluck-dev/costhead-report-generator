@@ -38,7 +38,8 @@ class AppWindow(ctk.CTk):
         self.gin_file = ""
         self.activities_df = None
         self.gin_df = None
-        self.costhead_file = ""
+        self.costhead_file = str(self._asset_path("assets", "files", "Latest CostHead Rule Map-New.xlsx"))
+        self.gst_file = str(self._asset_path("assets", "files", "ITEM MASTER GST.xlsx"))
 
         # Create UI
         self._create_ui()
@@ -535,7 +536,8 @@ class AppWindow(ctk.CTk):
 
     def _on_clear_costhead(self):
         """Deprecated: CostHead reporter tab removed"""
-        self.costhead_file = ""
+        self.costhead_file = str(self._asset_path("assets", "files", "Latest CostHead Rule Map-New.xlsx"))
+        self.gst_file = str(self._asset_path("assets", "files", "ITEM MASTER GST.xlsx"))
         if hasattr(self, 'costhead_file_label'):
             self.costhead_file_label.configure(text="No file selected")
 
@@ -544,9 +546,6 @@ class AppWindow(ctk.CTk):
         # Preconditions
         if self.activities_df is None or self.gin_df is None:
             messagebox.showwarning("Warning", "Please select both Activities and GIN files first")
-            return
-        if not self.costhead_file:
-            messagebox.showwarning("Warning", "Please select CostHead mapping file")
             return
         try:
             # Auto-detect columns
@@ -595,7 +594,8 @@ class AppWindow(ctk.CTk):
                 gin_mapped_path,
                 self.costhead_file,
                 out_dir,
-                self.match_mode_var.get() if hasattr(self, 'match_mode_var') else "contains"
+                self.match_mode_var.get() if hasattr(self, 'match_mode_var') else "contains",
+                self.gst_file
             )
 
             # 3) Append the GIN_Mapped sheet into the CostHead_Reports.xlsx as an extra sheet
