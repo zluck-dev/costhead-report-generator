@@ -1133,6 +1133,87 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         unmatched_detail.to_excel(xw, sheet_name="Unmatched_Detail", index=False)
         unmatched_by_sp.to_excel(xw, sheet_name="Unmatched_By_SubProject", index=False)
 
+        # Indian numbering system formatting (e.g., 12652545 -> 1,26,52,545)
+        # Note: this changes display only (Excel formatting), while calculations remain numeric.
+        try:
+            INDIAN_NUMBER_FORMAT = "#,##,##0.00"
+
+            def _apply_number_format(ws, header_row_idx: int, target_col_name: str):
+                # Find the column index by matching the header cell text.
+                header_cells = [
+                    ws.cell(row=header_row_idx, column=c).value
+                    for c in range(1, ws.max_column + 1)
+                ]
+                target_col_idx = None
+                for idx, hdr in enumerate(header_cells, start=1):
+                    if hdr is None:
+                        continue
+                    if str(hdr).strip() == target_col_name:
+                        target_col_idx = idx
+                        break
+                if target_col_idx is None:
+                    return
+
+                for r in range(header_row_idx + 1, ws.max_row + 1):
+                    cell = ws.cell(row=r, column=target_col_idx)
+                    if cell.value is None or cell.value == "":
+                        continue
+                    cell.number_format = INDIAN_NUMBER_FORMAT
+
+                    # If Excel interprets the grouping differently (e.g., 3-digit groups),
+                    # force the displayed value using Indian comma formatting.
+                    try:
+                        from decimal import Decimal, InvalidOperation
+                        if isinstance(cell.value, (int, float)):
+                            dec = Decimal(str(cell.value))
+                        else:
+                            dec = Decimal(str(cell.value))
+                        # Always keep 2 decimals for costhead amounts
+                        dec = dec.quantize(Decimal("0.00"))
+
+                        sign = "-" if dec < 0 else ""
+                        dec_abs = abs(dec)
+                        s = format(dec_abs, "f")  # e.g. "151627831.32"
+                        i_part, f_part = s.split(".")
+                        # Indian grouping: last 3 digits, then groups of 2
+                        if len(i_part) <= 3:
+                            indian_i = i_part
+                        else:
+                            last3 = i_part[-3:]
+                            rest = i_part[:-3]
+                            parts = []
+                            while len(rest) > 0:
+                                parts.append(rest[-2:])
+                                rest = rest[:-2]
+                            indian_i = ",".join(reversed(parts)) + "," + last3
+                        cell.value = f"{sign}{indian_i}.{f_part}"
+                    except Exception:
+                        # Fall back to just number_format if conversion fails
+                        pass
+
+            # Breakdown sheet
+            ws_breakdown = xw.sheets["CostHead_Breakdown"]
+            _apply_number_format(ws_breakdown, 1, "TotalAmount")
+
+            # Summary sheet
+            ws_summary = xw.sheets["CostHead_Summary"]
+            # Freeze first column (CostHead) for easier scrolling
+            # Assumes headers are in row 1, data starts at row 2.
+            ws_summary.freeze_panes = "B2"
+            _apply_number_format(ws_summary, 1, "Material TotalAmount")
+            if "GST Amount" in summary.columns:
+                _apply_number_format(ws_summary, 1, "GST Amount")
+            _apply_number_format(ws_summary, 1, "Total Material Amount with GST")
+
+            # Unmatched sheets
+            ws_unmatched_detail = xw.sheets["Unmatched_Detail"]
+            _apply_number_format(ws_unmatched_detail, 1, "IssueAmt")
+
+            ws_unmatched_by_sp = xw.sheets["Unmatched_By_SubProject"]
+            _apply_number_format(ws_unmatched_by_sp, 1, "TotalAmount")
+        except Exception:
+            pass
+
         # Apply formatting to the Amenities header row in CostHead_Summary
         try:
             ws = xw.sheets["CostHead_Summary"]
