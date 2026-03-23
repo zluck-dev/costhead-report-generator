@@ -387,14 +387,10 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     tagged = gin.copy()
     tagged["CostHead"] = "Other"
     assigned_mask = pd.Series(False, index=tagged.index)
+    unit_finish_head = "UNIT FINISH (COST REQUIRE TO FINISH ONE. UNIT (FLAT SHOP OFFICE SERVANT ROOM) . EXCLUDING MASONRY & PLASTER"
+    unit_finish_norm = _norm_text(unit_finish_head)
 
-    # FIRST: Apply special heads (Steel, Concrete, Masonry) based on keywords
-    specials = tagged.apply(_classify_special_head, axis=1)
-    special_mask = specials.isin(["Steel","Concrete","Masonry and plaster material only","RAILING, GRILL", "Louvers"])
-    tagged.loc[special_mask, "CostHead"] = specials[special_mask]
-    assigned_mask = assigned_mask | special_mask
-
-    # SECOND: Build expanded mapping rules (skipping special heads)
+    # Build expanded mapping rules (skipping special heads)
     expanded = []
     special_heads = {"Steel", "Concrete", "Masonry and plaster material only"}
     # Priority field order: ActivityName matches are applied before broader fields
@@ -416,18 +412,53 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
                 for f in fields:
                     field = _field_for(f)
                     priority = 1 if field in HIGH_PRIORITY_FIELDS else 2
-                    expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw, "Priority": priority})
+                    head_order = 0 if _norm_text(head_raw) == unit_finish_norm else 1
+                    expanded.append({"CostHead": head_raw, "Field": field, "Keyword": kw, "Priority": priority, "HeadOrder": head_order})
     map_expanded = pd.DataFrame(expanded)
 
-    # Apply mapping in two passes:
-    #   Pass 1 – ActivityName rules only  (priority 1)
-    #   Pass 2 – all other field rules    (priority 2)
-    # This ensures a row whose ActivityName matches "LIFT" is assigned to the
-    # "Lift" cost head before a ParentWBS rule for "STAIR..." can claim it.
+    # Apply mapping with explicit head ordering in stages:
+    #   Stage 1) Unit Finish head first (priority 1 then 2)
+    #   Stage 2) Special heads (Steel/Concrete/Masonry/...) on remaining rows
+    #   Stage 3) All remaining mapping heads (priority 1 then 2)
+    # This ensures Unit Finish gets first claim globally while preserving
+    # ActivityName-before-broader-field behavior within mapping stages.
     assigned_by_mapping = 0
     if not map_expanded.empty:
+        # Stage 1: Unit Finish mapping first
         for pass_priority in (1, 2):
-            pass_rules = map_expanded[map_expanded["Priority"] == pass_priority]
+            pass_rules = map_expanded[
+                (map_expanded["HeadOrder"] == 0) &
+                (map_expanded["Priority"] == pass_priority)
+            ]
+            for _, mr in pass_rules.iterrows():
+                field = mr["Field"]; kw = mr["Keyword"]; hay = tagged[field]
+                if match_mode == "exact":
+                    mask = (hay == kw)
+                else:
+                    try:
+                        mask = hay.str.contains(re.escape(kw), na=False)
+                    except Exception:
+                        mask = hay.fillna("").astype(str).str.contains(kw, na=False)
+                to_assign = mask & (~assigned_mask)
+                if to_assign.any():
+                    tagged.loc[to_assign, "CostHead"] = mr["CostHead"]
+                    assigned_mask = assigned_mask | to_assign
+                    assigned_by_mapping += int(to_assign.sum())
+
+    # Stage 2: Apply special heads to still-unassigned rows
+    specials = tagged.apply(_classify_special_head, axis=1)
+    special_mask = (~assigned_mask) & specials.isin(["Steel", "Concrete", "Masonry and plaster material only", "RAILING, GRILL", "Louvers"])
+    if special_mask.any():
+        tagged.loc[special_mask, "CostHead"] = specials[special_mask]
+        assigned_mask = assigned_mask | special_mask
+
+    # Stage 3: Apply all remaining mapping heads
+    if not map_expanded.empty:
+        for pass_priority in (1, 2):
+            pass_rules = map_expanded[
+                (map_expanded["HeadOrder"] == 1) &
+                (map_expanded["Priority"] == pass_priority)
+            ]
             for _, mr in pass_rules.iterrows():
                 field = mr["Field"]; kw = mr["Keyword"]; hay = tagged[field]
                 if match_mode == "exact":
@@ -446,6 +477,8 @@ def assign_cost_head(gin: pd.DataFrame, mapping: pd.DataFrame, match_mode="conta
     # Drop the Priority helper column before returning so callers aren't affected
     if "Priority" in map_expanded.columns:
         map_expanded = map_expanded.drop(columns=["Priority"])
+    if "HeadOrder" in map_expanded.columns:
+        map_expanded = map_expanded.drop(columns=["HeadOrder"])
 
     return tagged, map_expanded
 
