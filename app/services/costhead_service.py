@@ -691,14 +691,17 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     item_text: Dict[str, str] = {}
     gst_items_text: Dict[str, str] = {}
-    allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only", "RAILING, GRILL", "Louvers"}
 
-    # Process all cost heads for GST items, but only special heads for ITEM Remark
+    def _is_indoor_amenities_head(head) -> bool:
+        return str(head or "").strip().lower() == "indoor amenities"
+
+    # Process all cost heads for GST items; ITEM Remark for every head like Steel/Concrete/Masonry
+    # (aggregated ItemGroup | ItemDesc tokens), except Indoor Amenities — that row uses a separate
+    # SubProject bullet format below.
     for head in summary["CostHead"].tolist():
         subset = matched_final[matched_final["CostHead"] == head]
 
-        # Process ITEM Remark only for special heads (without GST info)
-        if head in allowed_item_heads:
+        if not _is_indoor_amenities_head(head):
             uniq = sorted(set(_token(r) for _, r in subset.iterrows()))
 
             MAX_ITEMS = 200
