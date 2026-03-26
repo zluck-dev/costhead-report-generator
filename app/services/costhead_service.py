@@ -955,18 +955,18 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # Pad missing heads and enforce order
     order_df = pd.DataFrame({"CostHead": desired_order})
     summary = order_df.merge(summary, on="CostHead", how="left")
+    
+    # Ensure amount columns are numeric and fill with NaN (empty in Excel) not empty strings
     if "Material TotalAmount" in summary.columns:
-        summary["Material TotalAmount"] = summary["Material TotalAmount"].fillna("")
-    summary["ITEM Remark"] = summary["ITEM Remark"].fillna("")
+        summary["Material TotalAmount"] = pd.to_numeric(summary["Material TotalAmount"], errors="coerce")
+    if "GST Amount" in summary.columns:
+        summary["GST Amount"] = pd.to_numeric(summary["GST Amount"], errors="coerce")
+    if "Total Material Amount with GST" in summary.columns:
+        summary["Total Material Amount with GST"] = pd.to_numeric(summary["Total Material Amount with GST"], errors="coerce")
 
-    # Only fill GST columns if they exist (when there's GST data)
-    if has_gst_data:
-        if "GST Amount" in summary.columns:
-            summary["GST Amount"] = summary["GST Amount"].fillna(0.0)
-        if "Total Material Amount with GST" in summary.columns:
-            summary["Total Material Amount with GST"] = summary["Total Material Amount with GST"].fillna("")
-        if "GST Items" in summary.columns:
-            summary["GST Items"] = summary["GST Items"].fillna("")
+    summary["ITEM Remark"] = summary["ITEM Remark"].fillna("")
+    if has_gst_data and "GST Items" in summary.columns:
+        summary["GST Items"] = summary["GST Items"].fillna("")
 
     # After reordering/padding, compute the Indoor Amenities Excel row index at write-time
     indoor_item_excel_row = None
@@ -1151,7 +1151,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         # Indian numbering system formatting (e.g., 12652545 -> 1,26,52,545)
         # Note: this changes display only (Excel formatting), while calculations remain numeric.
         try:
-            INDIAN_NUMBER_FORMAT = "#,##,##0.00"
+            INDIAN_NUMBER_FORMAT = '[>=10000000]##\,##\,##\,##0.00;[>=100000]##\,##\,##0.00;##,##0.00'
 
             def _apply_number_format(ws, header_row_idx: int, target_col_name: str):
                 # Find the column index by matching the header cell text.
@@ -1171,39 +1171,23 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
                 for r in range(header_row_idx + 1, ws.max_row + 1):
                     cell = ws.cell(row=r, column=target_col_idx)
-                    if cell.value is None or cell.value == "":
+                    cur_val = cell.value
+                    if cur_val is None or cur_val == "":
                         continue
-                    cell.number_format = INDIAN_NUMBER_FORMAT
 
-                    # If Excel interprets the grouping differently (e.g., 3-digit groups),
-                    # force the displayed value using Indian comma formatting.
+                    # Try to convert current value back to float if it was stored as text
                     try:
-                        from decimal import Decimal, InvalidOperation
-                        if isinstance(cell.value, (int, float)):
-                            dec = Decimal(str(cell.value))
-                        else:
-                            dec = Decimal(str(cell.value))
-                        # Always keep 2 decimals for costhead amounts
-                        dec = dec.quantize(Decimal("0.00"))
-
-                        sign = "-" if dec < 0 else ""
-                        dec_abs = abs(dec)
-                        s = format(dec_abs, "f")  # e.g. "151627831.32"
-                        i_part, f_part = s.split(".")
-                        # Indian grouping: last 3 digits, then groups of 2
-                        if len(i_part) <= 3:
-                            indian_i = i_part
-                        else:
-                            last3 = i_part[-3:]
-                            rest = i_part[:-3]
-                            parts = []
-                            while len(rest) > 0:
-                                parts.append(rest[-2:])
-                                rest = rest[:-2]
-                            indian_i = ",".join(reversed(parts)) + "," + last3
-                        cell.value = f"{sign}{indian_i}.{f_part}"
+                        # Clean common numeric noise: commas, non-breaking spaces, etc.
+                        import re
+                        s_val = str(cur_val).replace(",", "").replace("\u00a0"," ").strip()
+                        # Keep only the numeric parts
+                        m = re.search(r'[-+]?\d*\.?\d+', s_val)
+                        if m:
+                            num_val = float(m.group())
+                            cell.value = num_val
+                            cell.number_format = INDIAN_NUMBER_FORMAT
                     except Exception:
-                        # Fall back to just number_format if conversion fails
+                        # If it's a multiline string (e.g. Indoor Amenities bullets) or header, keep as text
                         pass
 
             # Breakdown sheet
