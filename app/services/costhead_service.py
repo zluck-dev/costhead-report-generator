@@ -74,6 +74,72 @@ MASONRY_EXCLUDE_GROUP = [
     "SUPREME AGRI"
 ]
 
+COMPULSORY_MASONARY_EXCLUDE_DESC = [
+    '8" PVC PIPE',
+    '1 1 2" NON ISI UPVC BEND 45',
+    '1 1 2" NON ISI UPVC UNION',
+    '160MM NON ISI PVC PIPE 6KG 6MTR',
+    '2" NON ISI CPVC COUPLER',
+    '200MM NON ISI PVC PIPE 6KG 6MTR',
+    '25MM NON ISI PVC PIPE 20KG 6MTR',
+    '50MM NON ISI PVC PIPE 10KG 6MTR',
+    '50MM NON ISI PVC PIPE 6KG 6MTR',
+    '75MM NON ISI PVC PIPE 10KG 6MTR',
+    '75MM NON ISI PVC PIPE 6KG 6MTR',
+    'NON ISI UPVC SOLVENT 237ML',
+    '6" HANDLE',
+    'ABRO TAP 1',
+    'ABRO TAPE',
+    'ABRO TAPE 2',
+    'ABRO TAPE 3 4',
+    'ALDROP SS 10',
+    'BEARING PIVOT 100MM X 19MM',
+    'BOLT 8MM X 1',
+    'BOLT 8MM X 3',
+    'BROWN TAPE',
+    'CLEAR SILICON 300ML',
+    'DOOR ROLLER GOLI',
+    'FEVIKWIK',
+    "FLOOR PROTECTION SHEET SIZE 6'X4' 2.5MM THIKNESS",
+    'HEX SCREW 25X12',
+    'KHILI 17 X 1',
+    'KHILI STEEL 500GM 14*1.50',
+    'KHILI STEEL 500GM 17*1',
+    'KHILI STEEL 500GM 17*1.25',
+    'KHILI STEEL 500GM 19*3 4',
+    'L CLAMP NUT BOLT',
+    'MS HINGIS 5',
+    'PAD LOCK 65MM',
+    'PROTECTION STICKER GUM GREEN ROLL 20 INCH X 45 MTR',
+    'PTA SCREW 19X6',
+    'PUSH MAGNET',
+    'PVC WALL PLUG 10*35',
+    'PVC WALL PLUG 12*50',
+    'SCREW 25 X 7',
+    'SCREW 50 X 10',
+    'SCREW 75 X 10',
+    'SELF DRILLING SCREW PTA 150*10',
+    'SELF DRILLING SCREW PTA 19*7',
+    'SELF DRILLING SCREW PTA 25*7',
+    'SELF DRILLING SCREW PTA 32*8',
+    'SELF DRILLING SCREW PTA 38*8',
+    'SELF DRILLING SCREW PTA 50*8',
+    'SELF DRILLING SCREW PTA 60*10',
+    'SELF DRILLING SCREW PTA 60*8',
+    'SELF DRILLING SCREW PTA 75*10',
+    'SELF DRILLING SCREW PTA 75*8',
+    'SS HINGES 5X1.25',
+    'SS HINGIS',
+    'SS TADI 200MM 8',
+    'TEFLONE TAPE 12MM X 10MTR',
+    'TILE SPACER 3MM',
+    'TILE SPACER 4MM',
+    'TUBULAR LOCK',
+    'WALL MAGNET',
+    'WALL PLUG 12 X 35',
+    'WALL PLUG 12 X 50',
+]
+
 CONCRETE_KEYWORDS_DESC = [
     "RMC","READY MIX","READY-MIX","READYMIX","TRANSIT MIX","PUMPED CONCRETE",
     "M20","M25","M30","M35","M40","DESIGN MIX","SITE MIX CONCRETE",
@@ -618,6 +684,27 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # 2) Reallocate any remaining "Other" by SubProject rules
     tagged_final = reallocate_unmatched_by_subproject(tagged)
 
+    # 2.5) Compulsory Masonry Exclusion (Late Override)
+    # This ensures items in COMPULSORY_MASONARY_EXCLUDE_DESC are never in Masonry Coshead
+    masonry_norm = _norm_text("Masonry and plaster material only")
+
+    def _is_compulsory_masonry_exclude(row):
+        d = str(row.get("ItemDesc", "") or "").upper()
+        r = str(row.get("Remarks", "") or "").upper()
+        hay = f"{d} {r}".strip()
+        return _contains_exact_keyword(hay, COMPULSORY_MASONARY_EXCLUDE_DESC)
+
+    # Check for rows that are currently Masonry but should be excluded
+    is_masonry_mask = tagged_final["CostHead"].apply(_norm_text) == masonry_norm
+    comp_exclude_mask = tagged_final.apply(_is_compulsory_masonry_exclude, axis=1)
+
+    final_exclude_mask = is_masonry_mask & comp_exclude_mask
+    tagged_final["__CompulsoryMasonryExcluded__"] = False
+    if final_exclude_mask.any():
+        tagged_final.loc[final_exclude_mask, "CostHead"] = "Other"
+        tagged_final.loc[final_exclude_mask, "__ExcludedByKeywords__"] = True
+        tagged_final.loc[final_exclude_mask, "__CompulsoryMasonryExcluded__"] = True
+
     # Canonicalize CostHead labels to avoid duplicates like STEEL vs Steel
     tagged_final["CostHead"] = tagged_final["CostHead"].apply(_canonicalize_costhead)
 
@@ -691,14 +778,17 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
     item_text: Dict[str, str] = {}
     gst_items_text: Dict[str, str] = {}
-    allowed_item_heads = {"Steel", "Concrete", "Masonry and plaster material only", "RAILING, GRILL", "Louvers"}
 
-    # Process all cost heads for GST items, but only special heads for ITEM Remark
+    def _is_indoor_amenities_head(head) -> bool:
+        return str(head or "").strip().lower() == "indoor amenities"
+
+    # Process all cost heads for GST items; ITEM Remark for every head like Steel/Concrete/Masonry
+    # (aggregated ItemGroup | ItemDesc tokens), except Indoor Amenities — that row uses a separate
+    # SubProject bullet format below.
     for head in summary["CostHead"].tolist():
         subset = matched_final[matched_final["CostHead"] == head]
 
-        # Process ITEM Remark only for special heads (without GST info)
-        if head in allowed_item_heads:
+        if not _is_indoor_amenities_head(head):
             uniq = sorted(set(_token(r) for _, r in subset.iterrows()))
 
             MAX_ITEMS = 200
@@ -865,18 +955,18 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # Pad missing heads and enforce order
     order_df = pd.DataFrame({"CostHead": desired_order})
     summary = order_df.merge(summary, on="CostHead", how="left")
+    
+    # Ensure amount columns are numeric and fill with NaN (empty in Excel) not empty strings
     if "Material TotalAmount" in summary.columns:
-        summary["Material TotalAmount"] = summary["Material TotalAmount"].fillna("")
-    summary["ITEM Remark"] = summary["ITEM Remark"].fillna("")
+        summary["Material TotalAmount"] = pd.to_numeric(summary["Material TotalAmount"], errors="coerce")
+    if "GST Amount" in summary.columns:
+        summary["GST Amount"] = pd.to_numeric(summary["GST Amount"], errors="coerce")
+    if "Total Material Amount with GST" in summary.columns:
+        summary["Total Material Amount with GST"] = pd.to_numeric(summary["Total Material Amount with GST"], errors="coerce")
 
-    # Only fill GST columns if they exist (when there's GST data)
-    if has_gst_data:
-        if "GST Amount" in summary.columns:
-            summary["GST Amount"] = summary["GST Amount"].fillna(0.0)
-        if "Total Material Amount with GST" in summary.columns:
-            summary["Total Material Amount with GST"] = summary["Total Material Amount with GST"].fillna("")
-        if "GST Items" in summary.columns:
-            summary["GST Items"] = summary["GST Items"].fillna("")
+    summary["ITEM Remark"] = summary["ITEM Remark"].fillna("")
+    if has_gst_data and "GST Items" in summary.columns:
+        summary["GST Items"] = summary["GST Items"].fillna("")
 
     # After reordering/padding, compute the Indoor Amenities Excel row index at write-time
     indoor_item_excel_row = None
@@ -911,10 +1001,9 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             return "PODIUM / NON TOWER AREA ( No Activity Code )"
         return f"{s} ( No Activity Code )" if s else "( No Activity Code )"
 
-    amenities_mask = (other_before["ActivityName"].fillna("") == "") | (other_before["ParentWBS"].fillna("") == "")
-    amenities_rows = other_before[amenities_mask].copy()
-    # Add Amenity column
-    amenities_rows = amenities_rows.assign(Amenity=amenities_rows["SubProject"].apply(_fmt_amenity_name))
+    # Helpers for the unmatched logic below
+    def _is_allowed_sp_for_unmatched(sp: str) -> bool:
+        return _is_allowed_subproject(sp)
 
     def _token(row):
         ig = str(row.get("ItemGroup", "") or "").strip()
@@ -923,181 +1012,95 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             return f"{ig} | {idc}"
         return idc or ig or "(blank)"
 
+    # --- BUILD FINAL SUMMARY SECTIONS ---
+    # We use tagged_final to find all items that ended up as "Other"
+    final_other = tagged_final[tagged_final["CostHead"] == "Other"].copy()
+
+    # 1. Compulsory Masonry Excluded
+    cm_mask = final_other["__CompulsoryMasonryExcluded__"] == True
+    compulsory_masonry_rows = final_other[cm_mask].copy()
+
+    # 2. Amenities (Missing Activity/WBS and not already in CM)
+    amenities_mask = (~cm_mask) & ((final_other["ActivityName"].fillna("") == "") | (final_other["ParentWBS"].fillna("") == ""))
+    amenities_rows = final_other[amenities_mask].copy()
+
+    # 3. Unmatched Keyword Excluded (Flagged as either normal or masonry exclusion)
+    kw_mask = (~amenities_mask) & (final_other["__ExcludedByKeywords__"] == True)
+    excluded_unmatched = final_other[kw_mask].copy()
+
+    # --- Section: Extra Remaining -Unmatched (Amenities) ---
     amenities_items = []
     amenities_gst_items = []
     if not amenities_rows.empty:
+        # Use existing formatting for amenity names
+        amenities_rows["Amenity"] = amenities_rows["SubProject"].apply(_fmt_amenity_name)
         for amenity, group in amenities_rows.groupby("Amenity"):
             items = "; ".join(sorted(set(_token(r) for _, r in group.iterrows())))
             amenities_items.append({"Amenity": amenity, "ITEM Remark": items})
-
-            # Create GST items for amenities
             if has_gst_data:
                 gst_items = [item for item in [_gst_item_token(r) for _, r in group.iterrows()] if item]
                 gst_items_uniq = sorted(set(gst_items))
                 amenities_gst_items.append({"Amenity": amenity, "GST Items": "\n".join(gst_items_uniq) if gst_items_uniq else ""})
             else:
                 amenities_gst_items.append({"Amenity": amenity, "GST Items": ""})
-    amenities_items = pd.DataFrame(amenities_items)
-    amenities_gst_items_df = pd.DataFrame(amenities_gst_items)
-    if not amenities_rows.empty:
+
+        amenities_summary_df = pd.DataFrame(amenities_items)
         if has_gst_data and "GST Amount" in amenities_rows.columns:
-            amenities_summary = (
+            amenity_agg = (
                 amenities_rows.groupby("Amenity", as_index=False)
-                .agg({
-                    "Amount": "sum",
-                    "GST Amount": "sum"
-                })
+                .agg({"Amount": "sum", "GST Amount": "sum"})
                 .rename(columns={"Amount": "Material TotalAmount"})
             )
-            if not amenities_items.empty:
-                amenities_summary = amenities_summary.merge(amenities_items, on="Amenity", how="left")
-            if not amenities_gst_items_df.empty:
-                amenities_summary = amenities_summary.merge(amenities_gst_items_df, on="Amenity", how="left")
-            amenities_summary["Total Material Amount with GST"] = amenities_summary["Material TotalAmount"] + amenities_summary["GST Amount"]
+            amenity_agg["Total Material Amount with GST"] = amenity_agg["Material TotalAmount"] + amenity_agg["GST Amount"]
         else:
-            amenities_summary = (
+            amenity_agg = (
                 amenities_rows.groupby("Amenity", as_index=False)["Amount"]
                 .sum().rename(columns={"Amount":"Material TotalAmount"})
             )
-            if not amenities_items.empty:
-                amenities_summary = amenities_summary.merge(amenities_items, on="Amenity", how="left")
-            if has_gst_data and not amenities_gst_items_df.empty:
-                amenities_summary = amenities_summary.merge(amenities_gst_items_df, on="Amenity", how="left")
-    else:
+
+        amenity_final_summary = amenity_agg.merge(amenities_summary_df, on="Amenity", how="left")
         if has_gst_data:
-            amenities_summary = pd.DataFrame(columns=["Amenity", "Material TotalAmount", "GST Amount", "Total Material Amount with GST", "ITEM Remark", "GST Items"])
-        else:
-            amenities_summary = pd.DataFrame(columns=["Amenity", "Material TotalAmount", "ITEM Remark"])
+            amenity_final_summary = amenity_final_summary.merge(pd.DataFrame(amenities_gst_items), on="Amenity", how="left")
 
-    # Include amenities also in unmatched views
-    # IMPORTANT: Build unmatched sheets from FINAL allocation so anything
-    # that got allocated by fallbacks/mapping does NOT remain in unmatched
-    final_other = tagged_final[tagged_final["CostHead"] == "Other"].copy()
-    unmatched_detail = (
-        final_other[["ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc","IssueQty","Amount"]]
-        .copy().rename(columns={"Amount":"IssueAmt"})
-        .sort_values(["SubProject","ActivityName","ParentWBS","Project"])
-    )
-    unmatched_by_sp = (
-        final_other.groupby(["SubProject","ActivityName","ParentWBS","Project"], as_index=False)["Amount"]
-        .sum().rename(columns={"Amount":"TotalAmount"})
-        .sort_values(["SubProject","TotalAmount"], ascending=[True, False])
-    )
+        # Add to summary
+        am_header = pd.DataFrame({"CostHead": ["Extra Remaining -Unmatched"]})
+        am_data = amenity_final_summary.rename(columns={"Amenity": "CostHead"})
+        summary_base_len = len(summary) # track for formatting
+        summary = pd.concat([summary, am_header, am_data], ignore_index=True)
 
-    # Append amenities summary at end of CostHead_Summary
-    if has_gst_data:
-        amenities_as_costhead = amenities_summary.rename(columns={"Amenity":"CostHead"})[
-            ["CostHead","Material TotalAmount","GST Amount","Total Material Amount with GST","ITEM Remark","GST Items"]
-        ]
-        amenities_header = pd.DataFrame({
-            "CostHead": ["Extra Remaining -Unmatched"],
-            "Material TotalAmount": [""],
-            "GST Amount": [""],
-            "Total Material Amount with GST": [""],
-            "ITEM Remark": [""],
-            "GST Items": [""]
-        })
-    else:
-        amenities_as_costhead = amenities_summary.rename(columns={"Amenity":"CostHead"})[
-            ["CostHead","Material TotalAmount","ITEM Remark"]
-        ]
-        amenities_header = pd.DataFrame({
-            "CostHead": ["Extra Remaining -Unmatched"],
-            "Material TotalAmount": [""],
-            "ITEM Remark": [""]
-        })
-    # Track the position (Excel row) of the amenities header for formatting
-    summary_base_len = len(summary)
-    summary = pd.concat([summary, amenities_header, amenities_as_costhead], ignore_index=True)
-
-    # Build special section for excluded unmatched items by keywords for allowed SubProjects only
-    def _is_allowed_sp_for_unmatched(sp: str) -> bool:
-        return _is_allowed_subproject(sp)
-
-    # Rows that remained Other before fallbacks AND were excluded by keywords
-    excluded_unmatched = other_before.copy()
-    if "__ExcludedByKeywords__" in tagged.columns:
-        # Merge the flag from current tagged by index alignment
-        flag_series = tagged.get("__ExcludedByKeywords__").fillna(False)
-        if len(flag_series) == len(excluded_unmatched):
-            excluded_unmatched["__ExcludedByKeywords__"] = flag_series.values
-        else:
-            # Best-effort: recompute
-            excluded_unmatched["__ExcludedByKeywords__"] = excluded_unmatched.apply(
-                lambda r: _is_excluded_for_unmatched(r.get("ItemGroup"), r.get("ItemDesc"), r.get("Remarks")), axis=1
-            )
-    else:
-        excluded_unmatched["__ExcludedByKeywords__"] = excluded_unmatched.apply(
-            lambda r: _is_excluded_for_unmatched(r.get("ItemGroup"), r.get("ItemDesc"), r.get("Remarks")), axis=1
-        )
-
-    # Keep only excluded with Activity (per latest rule)
-    excluded_unmatched = excluded_unmatched[(excluded_unmatched["__ExcludedByKeywords__"] == True) & (excluded_unmatched["ActivityName"].fillna("") != "")]
-    # Keep only Podium or Tower A-Z
-    excluded_unmatched = excluded_unmatched[excluded_unmatched["SubProject"].apply(_is_allowed_sp_for_unmatched)]
-
+    # --- Section: Unmatched Item Group & Items ---
     if not excluded_unmatched.empty:
-        # Group by SubProject and aggregate amounts and items
-        ex_items = []
-        ex_gst_items = []
-        for subproject, group in excluded_unmatched.groupby("SubProject"):
-            items = "; ".join(sorted(set(_token(r) for _, r in group.iterrows())))
-            ex_items.append({"SubProject": subproject, "ITEM Remark": items})
+        # Filter by allowed subprojects
+        ex_filtered = excluded_unmatched[excluded_unmatched["SubProject"].apply(_is_allowed_sp_for_unmatched)]
+        if not ex_filtered.empty:
+            ex_items = []
+            ex_gst_items = []
+            for subproject, group in ex_filtered.groupby("SubProject"):
+                items = "; ".join(sorted(set(_token(r) for _, r in group.iterrows())))
+                ex_items.append({"SubProject": subproject, "ITEM Remark": items})
+                if has_gst_data:
+                    gst_items = [item for item in [_gst_item_token(r) for _, r in group.iterrows()] if item]
+                    gst_items_uniq = sorted(set(gst_items))
+                    ex_gst_items.append({"SubProject": subproject, "GST Items": "\n".join(gst_items_uniq) if gst_items_uniq else ""})
+                else:
+                    ex_gst_items.append({"SubProject": subproject, "GST Items": ""})
 
-            # Create GST items for excluded unmatched
-            if has_gst_data:
-                gst_items = [item for item in [_gst_item_token(r) for _, r in group.iterrows()] if item]
-                gst_items_uniq = sorted(set(gst_items))
-                ex_gst_items.append({"SubProject": subproject, "GST Items": "\n".join(gst_items_uniq) if gst_items_uniq else ""})
-            else:
-                ex_gst_items.append({"SubProject": subproject, "GST Items": ""})
-        ex_items = pd.DataFrame(ex_items)
-        ex_gst_items_df = pd.DataFrame(ex_gst_items)
-        if has_gst_data and "GST Amount" in excluded_unmatched.columns:
-            ex_summary = (
-                excluded_unmatched.groupby("SubProject", as_index=False)
-                .agg({
-                    "Amount": "sum",
-                    "GST Amount": "sum"
-                })
+            ex_agg = (
+                ex_filtered.groupby("SubProject", as_index=False)
+                .agg({"Amount": "sum", "GST Amount": "sum"} if has_gst_data else {"Amount": "sum"})
                 .rename(columns={"Amount": "Material TotalAmount"})
                 .sort_values("SubProject")
             )
-            ex_summary["Total Material Amount with GST"] = ex_summary["Material TotalAmount"] + ex_summary["GST Amount"]
-        else:
-            ex_summary = (
-                excluded_unmatched.groupby("SubProject", as_index=False)["Amount"]
-                .sum().rename(columns={"Amount":"Material TotalAmount"})
-                .sort_values("SubProject")
-            )
-        ex_summary = ex_summary.merge(ex_items, on="SubProject", how="left")
-        if has_gst_data and not ex_gst_items_df.empty:
-            ex_summary = ex_summary.merge(ex_gst_items_df, on="SubProject", how="left")
+            if has_gst_data:
+                ex_agg["Total Material Amount with GST"] = ex_agg["Material TotalAmount"] + ex_agg["GST Amount"]
 
-        if has_gst_data:
-            unmatched_items_as_costhead = ex_summary.rename(columns={"SubProject":"CostHead"})[
-                ["CostHead","Material TotalAmount","GST Amount","Total Material Amount with GST","ITEM Remark","GST Items"]
-            ]
-            unmatched_items_header = pd.DataFrame({
-                "CostHead": ["Unmatched Item Group & Items"],
-                "Material TotalAmount": [""],
-                "GST Amount": [""],
-                "Total Material Amount with GST": [""],
-                "ITEM Remark": [""],
-                "GST Items": [""]
-            })
-        else:
-            unmatched_items_as_costhead = ex_summary.rename(columns={"SubProject":"CostHead"})[
-                ["CostHead","Material TotalAmount","ITEM Remark"]
-            ]
-            unmatched_items_header = pd.DataFrame({
-                "CostHead": ["Unmatched Item Group & Items"],
-                "Material TotalAmount": [""],
-                "ITEM Remark": [""]
-            })
-        # Append after amenities block
-        unmatched_base_len = len(summary)
-        summary = pd.concat([summary, unmatched_items_header, unmatched_items_as_costhead], ignore_index=True)
+            ex_final_summary = ex_agg.merge(pd.DataFrame(ex_items), on="SubProject", how="left")
+            if has_gst_data:
+                ex_final_summary = ex_final_summary.merge(pd.DataFrame(ex_gst_items), on="SubProject", how="left")
+
+            kw_header = pd.DataFrame({"CostHead": ["Unmatched Item Group & Items"]})
+            kw_data = ex_final_summary.rename(columns={"SubProject": "CostHead"})
+            summary = pd.concat([summary, kw_header, kw_data], ignore_index=True)
 
     # Append grand total row at the end of CostHead_Summary
     total_columns = ["Material TotalAmount", "GST Amount", "Total Material Amount with GST"]
@@ -1120,6 +1123,18 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
             if indoor_total_with_gst_text and "Total Material Amount with GST" in summary.columns:
                 summary.loc[indoor_mask_summary, "Total Material Amount with GST"] = indoor_total_with_gst_text
 
+    # Re-build unmatched detail views for the dedicated sheets
+    unmatched_detail = (
+        final_other[["ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc","IssueQty","Amount"]]
+        .copy().rename(columns={"Amount":"IssueAmt"})
+        .sort_values(["SubProject","ActivityName","ParentWBS","Project"])
+    )
+    unmatched_by_sp = (
+        final_other.groupby(["SubProject","ActivityName","ParentWBS","Project"], as_index=False)["Amount"]
+        .sum().rename(columns={"Amount":"TotalAmount"})
+        .sort_values(["SubProject","TotalAmount"], ascending=[True, False])
+    )
+
     # 4) Create output directory and write reports
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -1136,7 +1151,7 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         # Indian numbering system formatting (e.g., 12652545 -> 1,26,52,545)
         # Note: this changes display only (Excel formatting), while calculations remain numeric.
         try:
-            INDIAN_NUMBER_FORMAT = "#,##,##0.00"
+            INDIAN_NUMBER_FORMAT = '[>=10000000]##\,##\,##\,##0.00;[>=100000]##\,##\,##0.00;##,##0.00'
 
             def _apply_number_format(ws, header_row_idx: int, target_col_name: str):
                 # Find the column index by matching the header cell text.
@@ -1156,39 +1171,23 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
 
                 for r in range(header_row_idx + 1, ws.max_row + 1):
                     cell = ws.cell(row=r, column=target_col_idx)
-                    if cell.value is None or cell.value == "":
+                    cur_val = cell.value
+                    if cur_val is None or cur_val == "":
                         continue
-                    cell.number_format = INDIAN_NUMBER_FORMAT
 
-                    # If Excel interprets the grouping differently (e.g., 3-digit groups),
-                    # force the displayed value using Indian comma formatting.
+                    # Try to convert current value back to float if it was stored as text
                     try:
-                        from decimal import Decimal, InvalidOperation
-                        if isinstance(cell.value, (int, float)):
-                            dec = Decimal(str(cell.value))
-                        else:
-                            dec = Decimal(str(cell.value))
-                        # Always keep 2 decimals for costhead amounts
-                        dec = dec.quantize(Decimal("0.00"))
-
-                        sign = "-" if dec < 0 else ""
-                        dec_abs = abs(dec)
-                        s = format(dec_abs, "f")  # e.g. "151627831.32"
-                        i_part, f_part = s.split(".")
-                        # Indian grouping: last 3 digits, then groups of 2
-                        if len(i_part) <= 3:
-                            indian_i = i_part
-                        else:
-                            last3 = i_part[-3:]
-                            rest = i_part[:-3]
-                            parts = []
-                            while len(rest) > 0:
-                                parts.append(rest[-2:])
-                                rest = rest[:-2]
-                            indian_i = ",".join(reversed(parts)) + "," + last3
-                        cell.value = f"{sign}{indian_i}.{f_part}"
+                        # Clean common numeric noise: commas, non-breaking spaces, etc.
+                        import re
+                        s_val = str(cur_val).replace(",", "").replace("\u00a0"," ").strip()
+                        # Keep only the numeric parts
+                        m = re.search(r'[-+]?\d*\.?\d+', s_val)
+                        if m:
+                            num_val = float(m.group())
+                            cell.value = num_val
+                            cell.number_format = INDIAN_NUMBER_FORMAT
                     except Exception:
-                        # Fall back to just number_format if conversion fails
+                        # If it's a multiline string (e.g. Indoor Amenities bullets) or header, keep as text
                         pass
 
             # Breakdown sheet
