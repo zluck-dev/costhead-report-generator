@@ -168,6 +168,49 @@ MASONRY_KEYWORDS_DESC = [
 MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC",
                           "REBAR CHEMICAL","NON ISI PLUMBING","REGULAR HARDWARE"]
 
+
+COMPULSORY_COMMONPLUMING_EXCLUDE_DESC = [
+    'AL 43 MT 2201 BLACK MATT ACP 4MM 0.25 (OUTSIDE LIVING AREA )',
+    'ALUCOWIN PS 13 PEARL BROWN SIZE 8X4 THICKNESS 3MM 0.25'
+]
+
+
+COMPULSORY_TERRACEFINISHING_EXCLUDE_DESC = [
+    'AL 43 MT 2201 BLACK MATT ACP 4MM 0.25 FR GRADED(B CLASS)'
+]
+
+COMPULSORY_COMMONELECTRIC_EXCLUDE_DESC = [
+    '70005698 25MM CPVC COUPLER',
+    '70001133 75MM SWR COUPLER PF',
+    '70001161 75MM SWR SINGLE TEE PF',
+    '70002032 2 S S 3M 10FT 75MM A SWR P F',
+    '2" HOSE PIPE'
+]
+
+COMPULSORY_CONCRETE_EXCLUDE_DESC = [
+    'WHITE MARBLE (REGULAR THICKNESS: 15–16MM)'
+]
+
+COMPULSORY_LIFT_EXCLUDE_DESC = [
+    '8MM COMMERCIAL MDF 8*4',
+    'COMMERCIAL PLY 18MM 8*4',
+    'COMMERCIAL PLY 6MM 8*4',
+    'WEBERFIX PU HIFLEX (R2T) 5KG BUCKET PACKING (COMPONENT A 2.5KG , COMPONENT B 2.5KG)',
+    'SIKACERAM 125 EASYFIX GREY (C1T) 40KG',
+    'SIKACERAM 255 GREY (C2TE) 25KG',
+    'SIKACERAM 288H WHITE (C2TES1) 25KG',
+    'SIKACERAM 255 WHITE (C2TE) 25KG',
+    'SIKACERAM 288H GREY (C2TES1) 25KG',
+    'WEBERFIX PU ( 10KG )',
+    'WEBERSET FIRM GREY (C2TE) 20 KG',
+    'COLD BOND 1 LTD',
+    'OLD VALSADI WOOD'
+]
+
+COMPULSORY_WINDOWSECTION_KEYWORDS_DESC = [
+    'SIKACERAM 125 EASYFIX GREY (C1T) 40KG'
+]
+
 # Keywords for RAILING, GRILL classification
 RAILING_GRILL_KEYWORDS_DESC = [
 
@@ -705,6 +748,162 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         tagged_final.loc[final_exclude_mask, "__ExcludedByKeywords__"] = True
         tagged_final.loc[final_exclude_mask, "__CompulsoryMasonryExcluded__"] = True
 
+    # 2.6) Compulsory Common Plumbing Exclusion (Late Override)
+    # This ensures items in COMPULSORY_COMMONPLUMING_EXCLUDE_DESC are never in Common Plumbing Coshead
+    common_plumbing_norm = _norm_text("COMMON PLUMBING (INCLUDING PUMPS)")
+
+    def _is_compulsory_commonplumbing_exclude(row):
+        d = str(row.get("ItemDesc", "") or "").upper()
+        # Common plumbing exclusion must match ItemDesc only (no Remarks).
+        hay = d.strip()
+        return _contains_exact_keyword(hay, COMPULSORY_COMMONPLUMING_EXCLUDE_DESC)
+
+    # Check for rows that are currently Common Plumbing but should be excluded
+    is_common_plumbing_mask = tagged_final["CostHead"].apply(_norm_text) == common_plumbing_norm
+    common_comp_exclude_mask = tagged_final.apply(_is_compulsory_commonplumbing_exclude, axis=1)
+
+    final_common_exclude_mask = is_common_plumbing_mask & common_comp_exclude_mask
+    tagged_final["__CompulsoryCommonPlumbingExcluded__"] = False
+    if final_common_exclude_mask.any():
+        tagged_final.loc[final_common_exclude_mask, "CostHead"] = "Other"
+        tagged_final.loc[final_common_exclude_mask, "__ExcludedByKeywords__"] = True
+        tagged_final.loc[final_common_exclude_mask, "__CompulsoryCommonPlumbingExcluded__"] = True
+
+    # 2.7) Compulsory Terrace Finishing Exclusion (Late Override)
+    # This ensures items in COMPULSORY_TERRACEFINISHING_EXCLUDE_DESC are never in Terrace Finishing Coshead
+    terrace_finishing_norm = _norm_text("TERRACE FINISHING (WATERPROOFING AND FINISHING)")
+
+    def _is_compulsory_terracefinishing_exclude(row):
+        # Terrace finishing exclusion must match ItemDesc only (no Remarks).
+        d = str(row.get("ItemDesc", "") or "").upper()
+        hay = d.strip()
+        return _contains_exact_keyword(hay, COMPULSORY_TERRACEFINISHING_EXCLUDE_DESC)
+
+    # Check for rows that are currently Terrace Finishing but should be excluded
+    is_terrace_finishing_mask = tagged_final["CostHead"].apply(_norm_text) == terrace_finishing_norm
+    terrace_comp_exclude_mask = tagged_final.apply(_is_compulsory_terracefinishing_exclude, axis=1)
+
+    final_terrace_exclude_mask = is_terrace_finishing_mask & terrace_comp_exclude_mask
+    tagged_final["__CompulsoryTerraceFinishingExcluded__"] = False
+    if final_terrace_exclude_mask.any():
+        tagged_final.loc[final_terrace_exclude_mask, "CostHead"] = "Other"
+        tagged_final.loc[final_terrace_exclude_mask, "__ExcludedByKeywords__"] = True
+        tagged_final.loc[final_terrace_exclude_mask, "__CompulsoryTerraceFinishingExcluded__"] = True
+
+    # 2.8) Compulsory Common Electric Exclusion (Late Override)
+    # This ensures items in COMPULSORY_COMMONELECTRIC_EXCLUDE_DESC are never in Common Electric Coshead
+    common_electric_norm_raw = _norm_text("Common electric (geb, dg, tc to meter room and meter room to flat mcb)")
+    # CostHead label may differ by punctuation/spacing. Normalize to alphanumeric-only
+    # before doing equality so minor formatting differences do not break the mask.
+    def _norm_costhead_alnum(s: str) -> str:
+        t = _norm_text(s)
+        return re.sub(r"[^A-Z0-9]+", "", t)
+
+    common_electric_norm = _norm_costhead_alnum(common_electric_norm_raw)
+
+    # Normalize exclusion keywords once (helps if ItemDesc has punctuation/spacing differences).
+    # We remove everything except alphanumerics and spaces, then collapse whitespace.
+    def _norm_alnum_space(s: str) -> str:
+        s2 = _norm_text(s)
+        s2 = re.sub(r"[^A-Z0-9]+", " ", s2)
+        s2 = re.sub(r"\s+", " ", s2).strip()
+        return s2
+
+    common_electric_keywords_norm2 = {_norm_alnum_space(k) for k in COMPULSORY_COMMONELECTRIC_EXCLUDE_DESC}
+
+    def _is_compulsory_commonelectric_exclude(row):
+        # Common electric exclusion must match ItemDesc only (no Remarks).
+        d2 = _norm_alnum_space(str(row.get("ItemDesc", "") or ""))
+        # Use substring match after normalization to tolerate minor extra text.
+        return any(kw in d2 for kw in common_electric_keywords_norm2)
+
+    common_electric_comp_exclude_mask = tagged_final.apply(
+        _is_compulsory_commonelectric_exclude, axis=1
+    )
+
+    # Only exclude rows that are currently classified as "Common electric"
+    is_common_electric_mask = tagged_final["CostHead"].apply(_norm_costhead_alnum) == common_electric_norm
+    final_common_electric_exclude_mask = is_common_electric_mask & common_electric_comp_exclude_mask
+
+    # DEBUG: Print what CostHeads the keyword-matched items currently belong to
+    if common_electric_comp_exclude_mask.any():
+        debug_rows = tagged_final[common_electric_comp_exclude_mask][["CostHead", "ItemDesc", "ItemGroup"]].copy()
+        print("=== DEBUG: Items matching COMPULSORY_COMMONELECTRIC_EXCLUDE_DESC keywords ===")
+        for _, dr in debug_rows.iterrows():
+            print(f"  CostHead='{dr['CostHead']}' | ItemDesc='{dr['ItemDesc']}' | ItemGroup='{dr['ItemGroup']}'")
+        print(f"  Total keyword matches: {common_electric_comp_exclude_mask.sum()}")
+        print(f"  Total in Common Electric CostHead: {is_common_electric_mask.sum()}")
+        print(f"  Total actually excluded: {final_common_electric_exclude_mask.sum()}")
+        print("=== END DEBUG ===")
+    tagged_final["__CompulsoryCommonElectricExcluded__"] = False
+    if final_common_electric_exclude_mask.any():
+        tagged_final.loc[final_common_electric_exclude_mask, "CostHead"] = "Other"
+        tagged_final.loc[final_common_electric_exclude_mask, "__ExcludedByKeywords__"] = True
+        tagged_final.loc[final_common_electric_exclude_mask, "__CompulsoryCommonElectricExcluded__"] = True
+
+    # 2.9) Compulsory Concrete Exclusion (Late Override)
+    # Only exclude the exact items listed in COMPULSORY_CONCRETE_EXCLUDE_DESC,
+    # and ONLY when they are currently classified as Concrete.
+    concrete_norm = _norm_text("Concrete")
+
+    def _is_compulsory_concrete_exclude(row):
+        # Concrete exclusion must match ItemDesc only (no Remarks).
+        d_norm = _norm_text(str(row.get("ItemDesc", "") or ""))
+        concrete_kw_norm = [_norm_text(k) for k in COMPULSORY_CONCRETE_EXCLUDE_DESC]
+        return _contains_exact_keyword(d_norm, concrete_kw_norm)
+
+    is_concrete_mask = tagged_final["CostHead"].apply(_norm_text) == concrete_norm
+    concrete_comp_exclude_mask = tagged_final.apply(_is_compulsory_concrete_exclude, axis=1)
+
+    final_concrete_exclude_mask = is_concrete_mask & concrete_comp_exclude_mask
+    tagged_final["__CompulsoryConcreteExcluded__"] = False
+    if final_concrete_exclude_mask.any():
+        tagged_final.loc[final_concrete_exclude_mask, "CostHead"] = "Other"
+        tagged_final.loc[final_concrete_exclude_mask, "__ExcludedByKeywords__"] = True
+        tagged_final.loc[final_concrete_exclude_mask, "__CompulsoryConcreteExcluded__"] = True
+
+    # 2.10) Compulsory Lift Exclusion (Late Override)
+    # This ensures items in COMPULSORY_LIFT_EXCLUDE_DESC are never in Lift CostHead
+    lift_norm = _norm_text("Lift")
+
+    def _is_compulsory_lift_exclude(row):
+        # Lift exclusion must match ItemDesc only (no Remarks).
+        d = str(row.get("ItemDesc", "") or "").upper()
+        hay = d.strip()
+        return _contains_exact_keyword(hay, COMPULSORY_LIFT_EXCLUDE_DESC)
+
+    # Check for rows that are currently Lift but should be excluded
+    is_lift_mask = tagged_final["CostHead"].apply(_norm_text) == lift_norm
+    lift_comp_exclude_mask = tagged_final.apply(_is_compulsory_lift_exclude, axis=1)
+
+    final_lift_exclude_mask = is_lift_mask & lift_comp_exclude_mask
+    tagged_final["__CompulsoryLiftExcluded__"] = False
+    if final_lift_exclude_mask.any():
+        tagged_final.loc[final_lift_exclude_mask, "CostHead"] = "Other"
+        tagged_final.loc[final_lift_exclude_mask, "__ExcludedByKeywords__"] = True
+        tagged_final.loc[final_lift_exclude_mask, "__CompulsoryLiftExcluded__"] = True
+
+    # 2.11) Compulsory Window Section Exclusion (Late Override)
+    # This ensures items in COMPULSORY_WINDOWSECTION_KEYWORDS_DESC are never in Window section CostHead
+    window_section_norm = _norm_text("Window section")
+
+    def _is_compulsory_windowsection_exclude(row):
+        # Window section exclusion must match ItemDesc only (no Remarks).
+        d = str(row.get("ItemDesc", "") or "").upper()
+        hay = d.strip()
+        return _contains_exact_keyword(hay, COMPULSORY_WINDOWSECTION_KEYWORDS_DESC)
+
+    # Check for rows that are currently Window section but should be excluded
+    is_window_section_mask = tagged_final["CostHead"].apply(_norm_text) == window_section_norm
+    window_comp_exclude_mask = tagged_final.apply(_is_compulsory_windowsection_exclude, axis=1)
+
+    final_window_exclude_mask = is_window_section_mask & window_comp_exclude_mask
+    tagged_final["__CompulsoryWindowSectionExcluded__"] = False
+    if final_window_exclude_mask.any():
+        tagged_final.loc[final_window_exclude_mask, "CostHead"] = "Other"
+        tagged_final.loc[final_window_exclude_mask, "__ExcludedByKeywords__"] = True
+        tagged_final.loc[final_window_exclude_mask, "__CompulsoryWindowSectionExcluded__"] = True
+
     # Canonicalize CostHead labels to avoid duplicates like STEEL vs Steel
     tagged_final["CostHead"] = tagged_final["CostHead"].apply(_canonicalize_costhead)
 
@@ -1020,8 +1219,39 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     cm_mask = final_other["__CompulsoryMasonryExcluded__"] == True
     compulsory_masonry_rows = final_other[cm_mask].copy()
 
+    # 1b. Compulsory Common Plumbing Excluded
+    cp_mask = final_other["__CompulsoryCommonPlumbingExcluded__"] == True
+    compulsory_common_plumbing_rows = final_other[cp_mask].copy()
+    # 1c. Compulsory Terrace Finishing Excluded
+    tpf_mask = final_other["__CompulsoryTerraceFinishingExcluded__"] == True
+    compulsory_terrace_finishing_rows = final_other[tpf_mask].copy()
+
+    # 1d. Compulsory Common Electric Excluded
+    ce_mask = final_other["__CompulsoryCommonElectricExcluded__"] == True
+    compulsory_common_electric_rows = final_other[ce_mask].copy()
+
+    # 1e. Compulsory Concrete Excluded
+    cc_mask = final_other["__CompulsoryConcreteExcluded__"] == True
+    compulsory_concrete_rows = final_other[cc_mask].copy()
+
+    # 1f. Compulsory Lift Excluded
+    lf_mask = final_other["__CompulsoryLiftExcluded__"] == True
+    compulsory_lift_rows = final_other[lf_mask].copy()
+
+    # 1g. Compulsory Window Section Excluded
+    ws_mask = final_other["__CompulsoryWindowSectionExcluded__"] == True
+    compulsory_window_section_rows = final_other[ws_mask].copy()
+
+    special_excluded_mask = cm_mask | cp_mask | tpf_mask | ce_mask | cc_mask | lf_mask | ws_mask
+
     # 2. Amenities (Missing Activity/WBS and not already in CM)
-    amenities_mask = (~cm_mask) & ((final_other["ActivityName"].fillna("") == "") | (final_other["ParentWBS"].fillna("") == ""))
+    # If a row is already excluded by keywords, it should not be treated as
+    # "Amenities (Extra Remaining -Unmatched)" even if Activity/WBS is blank.
+    amenities_mask = (
+        (~special_excluded_mask)
+        & ((final_other["ActivityName"].fillna("") == "") | (final_other["ParentWBS"].fillna("") == ""))
+        & (final_other["__ExcludedByKeywords__"] != True)
+    )
     amenities_rows = final_other[amenities_mask].copy()
 
     # 3. Unmatched Keyword Excluded (Flagged as either normal or masonry exclusion)
