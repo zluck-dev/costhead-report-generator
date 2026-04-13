@@ -30,25 +30,11 @@ def main():
     print("="*50 + "\n")
 
     try:
-        # Use the same Python as this script (works with venv, conda, etc. on Windows and Unix)
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "streamlit",
-                "run",
-                str(app_file),
-                "--server.port",
-                "8501",
-                "--server.address",
-                "localhost",
-                "--browser.gatherUsageStats",
-                "false",
-            ],
-            cwd=script_dir,
-        )
-        if result.returncode:
-            sys.exit(result.returncode)
+        # Launch Streamlit using the exfile environment
+        subprocess.run([
+            "bash", "-c",
+            f"source exfile/bin/activate && python -m streamlit run {app_file} --server.port 8501 --server.address localhost --browser.gatherUsageStats false"
+        ], cwd=script_dir)
     except KeyboardInterrupt:
         print("\n👋 Shutting down CostHead Report Generator...")
     except Exception as e:
