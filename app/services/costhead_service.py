@@ -74,6 +74,23 @@ MASONRY_EXCLUDE_GROUP = [
     "SUPREME AGRI"
 ]
 
+# REGULAR HARDWARE + these descriptions must not be Masonry; they are forced to Other and
+# appear under "Unmatched Item Group & Items" (see compulsory masonry exclusion).
+MASONRY_STRICT_GROUP_EXCLUDES = {
+    "REGULAR HARDWARE": [
+        "L & KEY LOCK 32MM",
+        "SS HINGES 5X12",
+        "TABLE CHAIN 12",
+        "CLEAR SILICONE 789 DOWSEAL",
+        "NEUTRAL SILICON CLEAR",
+        "FEVICOL HEATEX",
+        "FEVICOL HETAX",
+        "TENEX CLEAR",
+        "3 4 ALUMINIUM PATTI",
+        "T ANGLE",
+    ]
+}
+
 COMPULSORY_MASONARY_EXCLUDE_DESC = [
     '8" PVC PIPE',
     '1 1 2" NON ISI UPVC BEND 45',
@@ -168,6 +185,20 @@ MASONRY_KEYWORDS_DESC = [
 MASONRY_KEYWORDS_GROUP = ["AAC","BRICK","BLOCK","MASONRY","PLASTER","PPC","SAND","PVC PIPE","NON ISI PVC",
                           "REBAR CHEMICAL","NON ISI PLUMBING","REGULAR HARDWARE"]
 
+COMMON_PLUMBING_EXCLUDE_GROUPS = [
+    "ALUMINIUM COMPOSITE PANEL",
+    "ALUMINIUM SQUARE PIPE",
+    "CHINA MOSAIC TILE",
+    "CHINA MOSAIC",
+    "COMMERCIAL PLY",
+    "FLUSH DOOR",
+    "LAMINATE",
+    "TILE ADHESIVE ITEMS",
+    "TILE ADHESIVE",
+    "ADHESIVE",
+    "WHITE CEMENT",
+]
+
 
 COMPULSORY_COMMONPLUMING_EXCLUDE_DESC = [
     'AL 43 MT 2201 BLACK MATT ACP 4MM 0.25 (OUTSIDE LIVING AREA )',
@@ -191,10 +222,23 @@ COMPULSORY_CONCRETE_EXCLUDE_DESC = [
     'WHITE MARBLE (REGULAR THICKNESS: 15–16MM)'
 ]
 
+CONCRETE_STRICT_GROUP_EXCLUDES = {
+    "FABRICATION": ["PROVIDING OF POLY CARBONATE SHEET"],
+    "M.S. SQUARE PIPE": ["ERW MS PIPES"],
+}
+
+LANDSCAPE_STRICT_GROUP_EXCLUDES = {
+    "FLUSH TANK": ["GEBERIT FLUSH TANK PLATE"],
+    "HDF": ["6MM 8X4 HDF"],
+}
+
 COMPULSORY_LIFT_EXCLUDE_DESC = [
     '8MM COMMERCIAL MDF 8*4',
     'COMMERCIAL PLY 18MM 8*4',
     'COMMERCIAL PLY 6MM 8*4',
+    'EXHAUST FAN 12"',
+    'M.S. PLATE 5MM',
+    'NATURAL STONE',
     'WEBERFIX PU HIFLEX (R2T) 5KG BUCKET PACKING (COMPONENT A 2.5KG , COMPONENT B 2.5KG)',
     'SIKACERAM 125 EASYFIX GREY (C1T) 40KG',
     'SIKACERAM 255 GREY (C2TE) 25KG',
@@ -350,9 +394,12 @@ def _contains_exact_keyword(text: str, keywords: List[str]) -> bool:
             if keyword_upper in text_upper:
                 return True
         else:
-            # Use word boundaries for simple keywords
+            # Use word boundaries only if the keyword starts/ends with a word character
             import re
-            pattern = r'\b' + re.escape(keyword_upper) + r'\b'
+            k_esc = re.escape(keyword_upper)
+            start_b = r'\b' if keyword_upper[0].isalnum() else ''
+            end_b = r'\b' if keyword_upper[-1].isalnum() else ''
+            pattern = rf'{start_b}{k_esc}{end_b}'
             if re.search(pattern, text_upper):
                 return True
     return False
@@ -378,6 +425,41 @@ def _is_excluded_for_unmatched(item_group: str, item_desc: str, remarks: str) ->
         return True
     return False
 
+def _regular_hardware_masonry_desc_excluded(item_group: str, hay: str) -> bool:
+    """Normalized ItemDesc+Remarks: excluded from Masonry when ItemGroup is REGULAR HARDWARE."""
+    g_norm = _norm_text(item_group)
+    if g_norm not in MASONRY_STRICT_GROUP_EXCLUDES:
+        return False
+    
+    hn = _norm_text(hay or "")
+    # Strip quotes for word-boundary match (e.g. 12" -> 12, 3/4" -> 3 4)
+    hn2 = re.sub(r'["\u201c\u201d]', " ", hn)
+    hn2 = re.sub(r"\s+", " ", hn2).strip()
+
+    exclude_list = MASONRY_STRICT_GROUP_EXCLUDES[g_norm]
+    if _contains_exact_keyword(hn2, exclude_list):
+        return True
+    return False
+
+def _is_regular_hardware_masonry_excluded(item_group: str, item_desc: str, remarks: str) -> bool:
+    return _regular_hardware_masonry_desc_excluded(item_group, f"{item_desc} {remarks}")
+
+def _is_compulsory_masonry_exclude_for_row(row: Dict) -> bool:
+    item_group = str(row.get("ItemGroup", "") or "")
+    item_desc = str(row.get("ItemDesc", "") or "")
+    remarks = str(row.get("Remarks", "") or "")
+
+    g_norm = _norm_text(item_group)
+    # If the group has strict exclusions, ONLY those items are excluded.
+    if g_norm in MASONRY_STRICT_GROUP_EXCLUDES:
+        return _regular_hardware_masonry_desc_excluded(item_group, f"{item_desc} {remarks}")
+
+    # For other groups, check the broad compulsory exclusion list.
+    d = item_desc.upper()
+    r = remarks.upper()
+    hay = f"{d} {r}".strip()
+    return _contains_exact_keyword(hay, COMPULSORY_MASONARY_EXCLUDE_DESC)
+
 def _classify_special_head(row: Dict) -> str:
     g = str(row.get("ItemGroup","") or "").upper()
     d = str(row.get("ItemDesc","") or "").upper()
@@ -396,8 +478,10 @@ def _classify_special_head(row: Dict) -> str:
             return "Steel"
 
     if sp_allowed and (_contains_exact_keyword(hay_desc, MASONRY_KEYWORDS_DESC) or _contains_exact_keyword(hay_group, MASONRY_KEYWORDS_GROUP)):
-        # Respect Masonry excludes
-        if not (_contains_exact_keyword(hay_desc, MASONRY_EXCLUDE_DESC) or _contains_exact_keyword(hay_group, MASONRY_EXCLUDE_GROUP)):
+        # Respect Masonry excludes; selected Regular Hardware lines go to Unmatched, not Masonry
+        if not _is_regular_hardware_masonry_excluded(g, d, r) and not (
+            _contains_exact_keyword(hay_desc, MASONRY_EXCLUDE_DESC) or _contains_exact_keyword(hay_group, MASONRY_EXCLUDE_GROUP)
+        ):
             return "Masonry and plaster material only"
 
     if sp_allowed:
@@ -731,15 +815,9 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # This ensures items in COMPULSORY_MASONARY_EXCLUDE_DESC are never in Masonry Coshead
     masonry_norm = _norm_text("Masonry and plaster material only")
 
-    def _is_compulsory_masonry_exclude(row):
-        d = str(row.get("ItemDesc", "") or "").upper()
-        r = str(row.get("Remarks", "") or "").upper()
-        hay = f"{d} {r}".strip()
-        return _contains_exact_keyword(hay, COMPULSORY_MASONARY_EXCLUDE_DESC)
-
     # Check for rows that are currently Masonry but should be excluded
     is_masonry_mask = tagged_final["CostHead"].apply(_norm_text) == masonry_norm
-    comp_exclude_mask = tagged_final.apply(_is_compulsory_masonry_exclude, axis=1)
+    comp_exclude_mask = tagged_final.apply(_is_compulsory_masonry_exclude_for_row, axis=1)
 
     final_exclude_mask = is_masonry_mask & comp_exclude_mask
     tagged_final["__CompulsoryMasonryExcluded__"] = False
@@ -753,6 +831,10 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     common_plumbing_norm = _norm_text("COMMON PLUMBING (INCLUDING PUMPS)")
 
     def _is_compulsory_commonplumbing_exclude(row):
+        item_group = _norm_text(str(row.get("ItemGroup", "") or ""))
+        if item_group in COMMON_PLUMBING_EXCLUDE_GROUPS:
+            return True
+
         d = str(row.get("ItemDesc", "") or "").upper()
         # Common plumbing exclusion must match ItemDesc only (no Remarks).
         hay = d.strip()
@@ -847,8 +929,18 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     concrete_norm = _norm_text("Concrete")
 
     def _is_compulsory_concrete_exclude(row):
+        item_group = _norm_text(str(row.get("ItemGroup", "") or ""))
+        item_desc = str(row.get("ItemDesc", "") or "")
+        
+        # Group-specific strict exclusions
+        if item_group in CONCRETE_STRICT_GROUP_EXCLUDES:
+            d_norm = _norm_text(item_desc)
+            exclude_list = [_norm_text(k) for k in CONCRETE_STRICT_GROUP_EXCLUDES[item_group]]
+            return _contains_exact_keyword(d_norm, exclude_list)
+
+        # For other groups, check the broad compulsory exclusion list.
         # Concrete exclusion must match ItemDesc only (no Remarks).
-        d_norm = _norm_text(str(row.get("ItemDesc", "") or ""))
+        d_norm = _norm_text(item_desc)
         concrete_kw_norm = [_norm_text(k) for k in COMPULSORY_CONCRETE_EXCLUDE_DESC]
         return _contains_exact_keyword(d_norm, concrete_kw_norm)
 
@@ -904,22 +996,121 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
         tagged_final.loc[final_window_exclude_mask, "__ExcludedByKeywords__"] = True
         tagged_final.loc[final_window_exclude_mask, "__CompulsoryWindowSectionExcluded__"] = True
 
+    # 2.12) Late Flagging for Unmatched Section
+    # This is a final catch-all pass to ensure every item in our exclusion groups
+    # is correctly moved to the "Unmatched" section, no matter what it was labeled before.
+    
+    def _final_strict_exclude_check(row):
+        g_norm = _norm_text(str(row.get("ItemGroup", "") or ""))
+        item_desc = str(row.get("ItemDesc", "") or "")
+        remarks = str(row.get("Remarks", "") or "")
+        hay = f"{item_desc} {remarks}"
+        d_upper = item_desc.upper().strip()
+        hay_upper = hay.upper().strip()
+        
+        # 1. Check all Global Compulsory Lists
+        if _contains_exact_keyword(hay_upper, COMPULSORY_MASONARY_EXCLUDE_DESC): return True
+        if _contains_exact_keyword(d_upper, COMPULSORY_COMMONPLUMING_EXCLUDE_DESC): return True
+        if _contains_exact_keyword(d_upper, COMPULSORY_TERRACEFINISHING_EXCLUDE_DESC): return True
+        if _contains_exact_keyword(d_upper, COMPULSORY_COMMONELECTRIC_EXCLUDE_DESC): return True
+        if _contains_exact_keyword(d_upper, COMPULSORY_LIFT_EXCLUDE_DESC): return True
+        if _contains_exact_keyword(d_upper, COMPULSORY_WINDOWSECTION_KEYWORDS_DESC): return True
+        
+        # 2. Masonry/Hardware (Strict Item List)
+        if g_norm in MASONRY_STRICT_GROUP_EXCLUDES:
+            if _regular_hardware_masonry_desc_excluded(g_norm, hay):
+                return True
+        
+        # 3. Concrete/Fabrication/Pipes (Strict Item List)
+        if g_norm in CONCRETE_STRICT_GROUP_EXCLUDES:
+            d_norm = _norm_text(item_desc)
+            exclude_list = [_norm_text(k) for k in CONCRETE_STRICT_GROUP_EXCLUDES[g_norm]]
+            if _contains_exact_keyword(d_norm, exclude_list):
+                return True
+        
+        # 4. Common Plumbing Groups (Whole group excluded)
+        if g_norm in COMMON_PLUMBING_EXCLUDE_GROUPS:
+            return True
+        
+        # 5. Landscape/Flush Tank (Strict Item List)
+        if g_norm in LANDSCAPE_STRICT_GROUP_EXCLUDES:
+            d_norm = _norm_text(item_desc)
+            exclude_list = [_norm_text(k) for k in LANDSCAPE_STRICT_GROUP_EXCLUDES[g_norm]]
+            if _contains_exact_keyword(d_norm, exclude_list):
+                return True
+            
+        # 5. Global Concrete Keywords
+        d_norm = _norm_text(item_desc)
+        concrete_kw_norm = [_norm_text(k) for k in COMPULSORY_CONCRETE_EXCLUDE_DESC]
+        if _contains_exact_keyword(d_norm, concrete_kw_norm):
+            return True
+
+        return False
+
+    # Final catch-all pass to ensure every item in our exclusion groups
+    # is correctly moved to the "Other" section and flagged for the "Unmatched" section.
+    is_late_exclude = tagged_final.apply(_final_strict_exclude_check, axis=1)
+    if is_late_exclude.any():
+        tagged_final.loc[is_late_exclude, "CostHead"] = "Other"
+        tagged_final.loc[is_late_exclude, "__ExcludedByKeywords__"] = True
+
+    # 2.13) Targeted Reallocation: Painting Material | SADA PRIMER JOTUN MAKE
+    # Move this specific item from Lift (or anywhere) to Outer paint and texture.
+    painting_realloc_mask = (
+        (tagged_final["ItemGroup"].fillna("").apply(_norm_text) == "PAINTING MATERIAL") &
+        (tagged_final["ItemDesc"].fillna("").apply(_norm_text) == "SADA PRIMER JOTUN MAKE")
+    )
+    if painting_realloc_mask.any():
+        # Force the move and ensure it's visible in the target CostHead
+        tagged_final.loc[painting_realloc_mask, "CostHead"] = "Outer paint and texture"
+        # Wipe "LIFT" association from Activity and WBS columns so it doesn't show "LIFT" there
+        tagged_final.loc[painting_realloc_mask, "ActivityName"] = "Outer paint and texture"
+        tagged_final.loc[painting_realloc_mask, "ParentWBS"] = "Outer paint and texture"
+        
+        tagged_final.loc[painting_realloc_mask, "__ExcludedByKeywords__"] = False
+        # Double check: ensure no Lift-specific exclusion flags remain
+        if "__CompulsoryLiftExcluded__" in tagged_final.columns:
+            tagged_final.loc[painting_realloc_mask, "__CompulsoryLiftExcluded__"] = False
+
     # Canonicalize CostHead labels to avoid duplicates like STEEL vs Steel
     tagged_final["CostHead"] = tagged_final["CostHead"].apply(_canonicalize_costhead)
 
-
     # 3) Build reports from the final classification
+    # Exclude manually excluded items and incomplete amenities from the main reports
+    if "__ExcludedByKeywords__" in tagged_final.columns:
+        is_excl = tagged_final["__ExcludedByKeywords__"].fillna(False).astype(bool)
+    else:
+        is_excl = pd.Series(False, index=tagged_final.index)
+        
+    is_other_head_raw = tagged_final["CostHead"].fillna("").str.strip().str.upper() == "OTHER"
+    is_inc_amenity = is_other_head_raw & (
+        (tagged_final["ActivityName"].fillna("") == "") | (tagged_final["ParentWBS"].fillna("") == "")
+    )
+    
+    report_mask = is_excl | is_inc_amenity
+    
     breakdown = (
-        tagged_final.groupby(["CostHead","ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc"], as_index=False)["Amount"]
+        tagged_final[~report_mask].groupby(["CostHead","ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc"], as_index=False)["Amount"]
         .sum().rename(columns={"Amount":"TotalAmount"})
         .sort_values(["CostHead","ActivityName","ParentWBS","SubProject","Project","ItemGroup","ItemDesc"])
     )
 
     matched_final = tagged_final.copy()  # everything, since we've allocated
-    amenities_mask_summary = (
-        (matched_final["CostHead"] == "Other") &
-        ((matched_final["ActivityName"].fillna("") == "") | (matched_final["ParentWBS"].fillna("") == ""))
+    # Exclude any rows that are flagged for the Unmatched section or are incomplete Amenities
+    if "__ExcludedByKeywords__" in matched_final.columns:
+        is_excluded_by_kw = matched_final["__ExcludedByKeywords__"].fillna(False).astype(bool)
+    else:
+        is_excluded_by_kw = pd.Series(False, index=matched_final.index)
+
+    # Case-insensitive check for "Other" CostHead
+    is_other_head = matched_final["CostHead"].fillna("").str.strip().str.upper() == "OTHER"
+    
+    is_incomplete_amenity = is_other_head & (
+        (matched_final["ActivityName"].fillna("") == "") | (matched_final["ParentWBS"].fillna("") == "")
     )
+    
+    # Final mask: Hide if it's a manual exclusion OR an incomplete amenity
+    amenities_mask_summary = is_excluded_by_kw | is_incomplete_amenity
     # Treat GST mode as active whenever GST columns exist in GIN mapped data.
     # This allows GST detail text even when GST amounts are 0 for some/all rows.
     has_gst_data = ("GST Amount" in matched_final.columns and "GST Slab" in matched_final.columns)
@@ -984,8 +1175,11 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
     # Process all cost heads for GST items; ITEM Remark for every head like Steel/Concrete/Masonry
     # (aggregated ItemGroup | ItemDesc tokens), except Indoor Amenities — that row uses a separate
     # SubProject bullet format below.
+    # Use the filtered data for building the Item Remark text
+    matched_final_filtered = matched_final[~amenities_mask_summary]
+
     for head in summary["CostHead"].tolist():
-        subset = matched_final[matched_final["CostHead"] == head]
+        subset = matched_final_filtered[matched_final_filtered["CostHead"] == head]
 
         if not _is_indoor_amenities_head(head):
             uniq = sorted(set(_token(r) for _, r in subset.iterrows()))
