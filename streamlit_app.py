@@ -16,6 +16,7 @@ from app.services.excel_service import load_excel, detect_numeric_columns
 from app.services.gin_service import list_sheets, load_sheet, auto_detect_columns, build_activity_lookup, merge_gin_with_lookup
 from app.services.costhead_service import generate_costhead_report
 from app.services.export_service import export_excel
+from app.services.gst_service import process_gst_for_gin_mapped
 
 # Configure Streamlit page
 st.set_page_config(
@@ -223,6 +224,22 @@ def generate_report(match_mode):
                 gin_cols["code"],
                 activities_lookup
             )
+
+            # Add GST columns (GST Slab, GST Amount, Total ISSUE Amount with GST)
+            # so the GIN_Mapped_output sheet carries the amount-with-GST per row,
+            # enabling sub-project-wise analysis with GST based on the GST sheet.
+            merged_df = process_gst_for_gin_mapped(merged_df, GST_ASSET_PATH)
+
+            # Place the GST columns right after the issue-amount column
+            # (instead of at the end) for easier reading.
+            gst_cols = ["GST Slab", "GST Amount", "Total ISSUE Amount with GST"]
+            amount_candidates = ["Amount", "ISSUE AMOUNT", "Issue Amount", "amount", "issue amount", "AMOUNT"]
+            amount_col = next((c for c in amount_candidates if c in merged_df.columns), None)
+            if amount_col and all(c in merged_df.columns for c in gst_cols):
+                ordered = [c for c in merged_df.columns if c not in gst_cols]
+                insert_at = ordered.index(amount_col) + 1
+                ordered[insert_at:insert_at] = gst_cols
+                merged_df = merged_df[ordered]
 
             # Create temporary directory for output
             with tempfile.TemporaryDirectory() as temp_dir:

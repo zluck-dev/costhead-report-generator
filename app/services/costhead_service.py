@@ -1599,6 +1599,12 @@ def generate_costhead_report(gin_filepath: str, costhead_filepath: str, output_d
                     if cur_val is None or cur_val == "":
                         continue
 
+                    # Keep multi-line breakdown text as-is (e.g. Indoor Amenities
+                    # per-SubProject bullets in GST Amount / Total with GST). These
+                    # must not be collapsed to their first number.
+                    if "\n" in str(cur_val):
+                        continue
+
                     # Try to convert current value back to float if it was stored as text
                     try:
                         # Clean common numeric noise: commas, non-breaking spaces, etc.
